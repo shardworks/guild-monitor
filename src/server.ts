@@ -3,11 +3,15 @@ import {
   readGuildConfig,
   findGuildRoot,
   listCommissions,
+  listWorks,
+  listPieces,
+  listJobs,
+  listStrokes,
   commission as postCommission,
 } from "@shardworks/nexus-core";
 import { renderDashboard } from "./dashboard.js";
 import { renderApiJson } from "./api.js";
-import { renderCommissionsPage } from "./commissions.js";
+import { renderWorkPage } from "./work.js";
 
 export interface MonitorOptions {
   /**
@@ -54,13 +58,47 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
+      // --- Hierarchy API routes ---
+
+      // GET /api/works?commissionId=<id>
+      if (pathname === "/api/works" && req.method === "GET") {
+        const commissionId = url.searchParams.get("commissionId") ?? undefined;
+        const works = listWorks(home, { commissionId });
+        respondJson(res, works);
+        return;
+      }
+
+      // GET /api/pieces?workId=<id>
+      if (pathname === "/api/pieces" && req.method === "GET") {
+        const workId = url.searchParams.get("workId") ?? undefined;
+        const pieces = listPieces(home, { workId });
+        respondJson(res, pieces);
+        return;
+      }
+
+      // GET /api/jobs?pieceId=<id>
+      if (pathname === "/api/jobs" && req.method === "GET") {
+        const pieceId = url.searchParams.get("pieceId") ?? undefined;
+        const jobs = listJobs(home, { pieceId });
+        respondJson(res, jobs);
+        return;
+      }
+
+      // GET /api/strokes?jobId=<id>
+      if (pathname === "/api/strokes" && req.method === "GET") {
+        const jobId = url.searchParams.get("jobId") ?? undefined;
+        const strokes = listStrokes(home, { jobId });
+        respondJson(res, strokes);
+        return;
+      }
+
       // --- Page routes ---
 
-      // Commissions section
-      if (pathname === "/commissions") {
+      // Work section (renamed from Commissions)
+      if (pathname === "/work") {
         const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
         const commissions = listCommissions(home);
-        const html = renderCommissionsPage(
+        const html = renderWorkPage(
           commissions,
           config.workshops,
           page,
@@ -73,6 +111,13 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
           "Cache-Control": "no-store",
         });
         res.end(html);
+        return;
+      }
+
+      // Redirect old /commissions URL to /work
+      if (pathname === "/commissions") {
+        res.writeHead(301, { Location: "/work" });
+        res.end();
         return;
       }
 
@@ -98,6 +143,19 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
       resolve();
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// JSON response helper
+// ---------------------------------------------------------------------------
+
+function respondJson(res: http.ServerResponse, data: unknown): void {
+  const json = JSON.stringify(data);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  });
+  res.end(json);
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +192,7 @@ function handleCreateCommission(
       const spec = params.get("spec") ?? "";
 
       if (!workshop || !spec) {
-        res.writeHead(302, { Location: "/commissions?error=missing-fields" });
+        res.writeHead(302, { Location: "/work?error=missing-fields" });
         res.end();
         return;
       }
@@ -142,13 +200,13 @@ function handleCreateCommission(
       postCommission({ home, workshop, spec });
 
       // Redirect back to commissions list on success
-      res.writeHead(302, { Location: "/commissions?created=1" });
+      res.writeHead(302, { Location: "/work?created=1" });
       res.end();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       console.error("Failed to create commission:", msg);
       res.writeHead(302, {
-        Location: `/commissions?error=${encodeURIComponent(msg)}`,
+        Location: `/work?error=${encodeURIComponent(msg)}`,
       });
       res.end();
     }

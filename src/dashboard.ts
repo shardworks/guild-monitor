@@ -7,7 +7,7 @@ import type {
   StandingOrder,
   ClockworksConfig,
 } from "@shardworks/nexus-core";
-import { renderTopNav } from "./commissions.js";
+import { renderTopNav } from "./work.js";
 
 /**
  * Render the full dashboard HTML page from the guild config.

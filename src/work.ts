@@ -3,9 +3,10 @@ import type { CommissionSummary, WorkshopEntry } from "@shardworks/nexus-core";
 const PAGE_SIZE = 15;
 
 /**
- * Render the commissions section — list with pagination and create form.
+ * Render the Work section — commission list with drill-down into
+ * works, pieces, jobs, and strokes.
  */
-export function renderCommissionsPage(
+export function renderWorkPage(
   commissions: CommissionSummary[],
   workshops: Record<string, WorkshopEntry>,
   page: number,
@@ -23,12 +24,12 @@ export function renderCommissionsPage(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(guildName)} — Commissions</title>
+  <title>${esc(guildName)} — Work</title>
   <style>${CSS}</style>
 </head>
 <body>
   ${renderHeader(guildName, nexus, model)}
-  ${renderTopNav("commissions")}
+  ${renderTopNav("work")}
   <main>
     <section id="create-commission">
       <h2>New Commission</h2>
@@ -43,6 +44,7 @@ export function renderCommissionsPage(
   <footer>
     <p>Guild Monitor v0.1.0 &middot; Refreshed at ${new Date().toLocaleTimeString()}</p>
   </footer>
+  <script>${CLIENT_JS}</script>
 </body>
 </html>`;
 }
@@ -74,6 +76,7 @@ function renderCommissionList(items: CommissionSummary[]): string {
   return `<div class="table-wrap"><table>
     <thead>
       <tr>
+        <th></th>
         <th>ID</th>
         <th>Status</th>
         <th>Workshop</th>
@@ -84,13 +87,21 @@ function renderCommissionList(items: CommissionSummary[]): string {
     </thead>
     <tbody>${items.map((c) => {
       const preview = truncate(c.content, 120);
-      return `<tr>
+      return `<tr class="commission-row" data-commission-id="${esc(c.id)}">
+        <td class="expand-cell"><span class="expand-icon">&#9654;</span></td>
         <td class="mono">${esc(c.id)}</td>
         <td>${statusBadge(c.status)}</td>
         <td class="mono">${esc(c.workshop)}</td>
         <td class="spec-preview">${esc(preview)}</td>
         <td class="nowrap">${formatDate(c.createdAt)}</td>
         <td class="nowrap">${formatDate(c.updatedAt)}</td>
+      </tr>
+      <tr class="detail-row hidden" id="detail-${esc(c.id)}">
+        <td colspan="7">
+          <div class="detail-panel">
+            <div class="detail-loading">Loading&hellip;</div>
+          </div>
+        </td>
       </tr>`;
     }).join("")}
     </tbody>
@@ -103,7 +114,7 @@ function renderPagination(current: number, total: number): string {
   const links: string[] = [];
 
   if (current > 1) {
-    links.push(`<a href="/commissions?page=${current - 1}" class="page-link">&laquo; Prev</a>`);
+    links.push(`<a href="/work?page=${current - 1}" class="page-link">&laquo; Prev</a>`);
   } else {
     links.push(`<span class="page-link disabled">&laquo; Prev</span>`);
   }
@@ -112,12 +123,12 @@ function renderPagination(current: number, total: number): string {
     if (i === current) {
       links.push(`<span class="page-link active">${i}</span>`);
     } else {
-      links.push(`<a href="/commissions?page=${i}" class="page-link">${i}</a>`);
+      links.push(`<a href="/work?page=${i}" class="page-link">${i}</a>`);
     }
   }
 
   if (current < total) {
-    links.push(`<a href="/commissions?page=${current + 1}" class="page-link">Next &raquo;</a>`);
+    links.push(`<a href="/work?page=${current + 1}" class="page-link">Next &raquo;</a>`);
   } else {
     links.push(`<span class="page-link disabled">Next &raquo;</span>`);
   }
@@ -157,10 +168,10 @@ function renderCreateForm(workshops: Record<string, WorkshopEntry>): string {
 /**
  * Render the top-level navigation bar with section links.
  */
-export function renderTopNav(active: "configuration" | "commissions"): string {
+export function renderTopNav(active: "configuration" | "work"): string {
   return `<nav class="top-nav">
     <a href="/"${active === "configuration" ? ' class="active"' : ""}>Configuration</a>
-    <a href="/commissions"${active === "commissions" ? ' class="active"' : ""}>Commissions</a>
+    <a href="/work"${active === "work" ? ' class="active"' : ""}>Work</a>
   </nav>`;
 }
 
@@ -175,18 +186,20 @@ function statusBadge(status: string): string {
 
 const STATUS_CLASSES: Record<string, string> = {
   posted: "badge-posted",
-  in_progress: "badge-active",
   active: "badge-active",
+  in_progress: "badge-active",
+  open: "badge-posted",
   completed: "badge-completed",
   cancelled: "badge-cancelled",
   failed: "badge-failed",
+  pending: "badge-posted",
+  complete: "badge-completed",
 };
 
 function truncate(text: string, maxLen: number): string {
-  // Take the first line or first maxLen chars, whichever is shorter
   const firstLine = text.split("\n")[0] ?? "";
   const base = firstLine.length > maxLen ? firstLine.slice(0, maxLen) : firstLine;
-  return base.length < firstLine.length ? base + "…" : base;
+  return base.length < firstLine.length ? base + "\u2026" : base;
 }
 
 function formatDate(iso: string): string {
@@ -211,7 +224,229 @@ function esc(str: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Styles — extends the base dashboard CSS with commission-specific additions
+// Client-side JavaScript — progressive drill-down into commission hierarchy
+// ---------------------------------------------------------------------------
+
+const CLIENT_JS = `
+(function() {
+  "use strict";
+
+  // --- Helpers ---
+
+  function esc(str) {
+    var d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function badge(status) {
+    var cls = {
+      posted: "badge-posted", active: "badge-active", in_progress: "badge-active",
+      open: "badge-posted", completed: "badge-completed", cancelled: "badge-cancelled",
+      failed: "badge-failed", pending: "badge-posted", complete: "badge-completed"
+    }[status] || "badge-alt";
+    return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
+  }
+
+  function fmtDate(iso) {
+    try { return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }); }
+    catch(e) { return esc(iso); }
+  }
+
+  function truncate(text, max) {
+    var line = (text || "").split("\\n")[0] || "";
+    return line.length > max ? line.slice(0, max) + "\\u2026" : line;
+  }
+
+  // --- Data fetching ---
+
+  function fetchJson(url) {
+    return fetch(url).then(function(r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  // --- Render hierarchy sections ---
+
+  function renderWorks(works) {
+    if (works.length === 0) return '<p class="empty">No works.</p>';
+    var html = '<div class="hierarchy-section">';
+    html += '<h4>Works <span class="count">(' + works.length + ')</span></h4>';
+    html += '<div class="hierarchy-list">';
+    works.forEach(function(w) {
+      html += '<div class="hierarchy-item" data-type="work" data-id="' + esc(w.id) + '">';
+      html += '<div class="hierarchy-header">';
+      html += '<span class="expand-icon">&#9654;</span> ';
+      html += '<span class="mono">' + esc(w.id) + '</span> ';
+      html += badge(w.status) + ' ';
+      html += '<strong>' + esc(w.title) + '</strong>';
+      if (w.description) html += ' <span class="text-muted">' + esc(truncate(w.description, 80)) + '</span>';
+      html += '</div>';
+      html += '<div class="hierarchy-children hidden"></div>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderPieces(pieces) {
+    if (pieces.length === 0) return '<p class="empty">No pieces.</p>';
+    var html = '<div class="hierarchy-section">';
+    html += '<h4>Pieces <span class="count">(' + pieces.length + ')</span></h4>';
+    html += '<div class="hierarchy-list">';
+    pieces.forEach(function(p) {
+      html += '<div class="hierarchy-item" data-type="piece" data-id="' + esc(p.id) + '">';
+      html += '<div class="hierarchy-header">';
+      html += '<span class="expand-icon">&#9654;</span> ';
+      html += '<span class="mono">' + esc(p.id) + '</span> ';
+      html += badge(p.status) + ' ';
+      html += '<strong>' + esc(p.title) + '</strong>';
+      if (p.description) html += ' <span class="text-muted">' + esc(truncate(p.description, 80)) + '</span>';
+      html += '</div>';
+      html += '<div class="hierarchy-children hidden"></div>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderJobs(jobs) {
+    if (jobs.length === 0) return '<p class="empty">No jobs.</p>';
+    var html = '<div class="hierarchy-section">';
+    html += '<h4>Jobs <span class="count">(' + jobs.length + ')</span></h4>';
+    html += '<div class="hierarchy-list">';
+    jobs.forEach(function(j) {
+      html += '<div class="hierarchy-item" data-type="job" data-id="' + esc(j.id) + '">';
+      html += '<div class="hierarchy-header">';
+      html += '<span class="expand-icon">&#9654;</span> ';
+      html += '<span class="mono">' + esc(j.id) + '</span> ';
+      html += badge(j.status) + ' ';
+      html += '<strong>' + esc(j.title) + '</strong>';
+      if (j.assignee) html += ' <span class="badge badge-alt">' + esc(j.assignee) + '</span>';
+      if (j.description) html += ' <span class="text-muted">' + esc(truncate(j.description, 80)) + '</span>';
+      html += '</div>';
+      html += '<div class="hierarchy-children hidden"></div>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderStrokes(strokes) {
+    if (strokes.length === 0) return '<p class="empty">No strokes.</p>';
+    var html = '<div class="hierarchy-section">';
+    html += '<h4>Strokes <span class="count">(' + strokes.length + ')</span></h4>';
+    html += '<div class="stroke-list">';
+    strokes.forEach(function(s) {
+      html += '<div class="stroke-item">';
+      html += badge(s.status) + ' ';
+      html += '<span class="badge badge-alt">' + esc(s.kind) + '</span> ';
+      if (s.content) html += '<span>' + esc(s.content) + '</span>';
+      html += '</div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  // --- Expand/collapse logic ---
+
+  // Commission row toggle
+  document.querySelectorAll(".commission-row").forEach(function(row) {
+    row.addEventListener("click", function() {
+      var id = row.dataset.commissionId;
+      var detailRow = document.getElementById("detail-" + id);
+      if (!detailRow) return;
+
+      var isHidden = detailRow.classList.contains("hidden");
+      var icon = row.querySelector(".expand-icon");
+
+      if (isHidden) {
+        detailRow.classList.remove("hidden");
+        row.classList.add("selected");
+        if (icon) icon.innerHTML = "&#9660;";
+
+        // Load works if not yet loaded
+        var panel = detailRow.querySelector(".detail-panel");
+        if (panel && panel.querySelector(".detail-loading")) {
+          fetchJson("/api/works?commissionId=" + encodeURIComponent(id))
+            .then(function(works) {
+              panel.innerHTML = renderWorks(works);
+              attachHierarchyListeners(panel);
+            })
+            .catch(function(err) {
+              panel.innerHTML = '<p class="empty">Failed to load works: ' + esc(err.message) + '</p>';
+            });
+        }
+      } else {
+        detailRow.classList.add("hidden");
+        row.classList.remove("selected");
+        if (icon) icon.innerHTML = "&#9654;";
+      }
+    });
+  });
+
+  // Hierarchy item toggle (works, pieces, jobs)
+  function attachHierarchyListeners(container) {
+    container.querySelectorAll(".hierarchy-item").forEach(function(item) {
+      // Only attach to direct header, not nested items
+      var header = item.querySelector(".hierarchy-header");
+      if (!header || header.dataset.bound) return;
+      header.dataset.bound = "1";
+
+      header.addEventListener("click", function(e) {
+        e.stopPropagation();
+        var type = item.dataset.type;
+        var id = item.dataset.id;
+        var children = item.querySelector(".hierarchy-children");
+        var icon = header.querySelector(".expand-icon");
+        if (!children) return;
+
+        var isHidden = children.classList.contains("hidden");
+
+        if (isHidden) {
+          children.classList.remove("hidden");
+          if (icon) icon.innerHTML = "&#9660;";
+
+          // Fetch children if empty
+          if (children.innerHTML.trim() === "") {
+            children.innerHTML = '<span class="text-muted">Loading&hellip;</span>';
+            var url;
+            var renderer;
+            if (type === "work") {
+              url = "/api/pieces?workId=" + encodeURIComponent(id);
+              renderer = renderPieces;
+            } else if (type === "piece") {
+              url = "/api/jobs?pieceId=" + encodeURIComponent(id);
+              renderer = renderJobs;
+            } else if (type === "job") {
+              url = "/api/strokes?jobId=" + encodeURIComponent(id);
+              renderer = renderStrokes;
+            }
+
+            if (url && renderer) {
+              fetchJson(url)
+                .then(function(data) {
+                  children.innerHTML = renderer(data);
+                  attachHierarchyListeners(children);
+                })
+                .catch(function(err) {
+                  children.innerHTML = '<p class="empty">Failed to load: ' + esc(err.message) + '</p>';
+                });
+            }
+          }
+        } else {
+          children.classList.add("hidden");
+          if (icon) icon.innerHTML = "&#9654;";
+        }
+      });
+    });
+  }
+})();
+`;
+
+// ---------------------------------------------------------------------------
+// Styles
 // ---------------------------------------------------------------------------
 
 const CSS = `
@@ -282,7 +517,7 @@ const CSS = `
   .badge-cancelled { background: rgba(255,255,255,0.06); color: var(--text-muted); }
   .badge-failed { background: rgba(248,113,113,0.15); color: var(--red); }
 
-  /* Top Nav — section-level navigation */
+  /* Top Nav */
   .top-nav {
     position: sticky;
     top: 0;
@@ -314,7 +549,7 @@ const CSS = `
     border-bottom-color: var(--accent);
   }
 
-  /* Sub Nav — within-section navigation */
+  /* Sub Nav */
   nav:not(.top-nav) {
     background: var(--bg);
     border-bottom: 1px solid var(--border);
@@ -383,7 +618,7 @@ const CSS = `
     border-bottom: 1px solid rgba(255,255,255,0.03);
     vertical-align: top;
   }
-  tbody tr:hover { background: rgba(255,255,255,0.02); }
+  tbody tr:hover:not(.detail-row) { background: rgba(255,255,255,0.02); }
   .spec-preview {
     max-width: 360px;
     overflow: hidden;
@@ -393,6 +628,91 @@ const CSS = `
     font-size: 0.82rem;
   }
   .nowrap { white-space: nowrap; }
+
+  /* Commission rows — clickable */
+  .commission-row { cursor: pointer; }
+  .commission-row.selected { background: rgba(108,140,255,0.06); }
+  .expand-cell { width: 1.5rem; text-align: center; }
+  .expand-icon {
+    display: inline-block;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+  }
+
+  /* Detail row — expandable panel below commission */
+  .detail-row td {
+    padding: 0;
+    border-bottom: none;
+  }
+  .detail-row.hidden { display: none; }
+  .detail-panel {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin: 0.25rem 0.75rem 0.75rem 2rem;
+    padding: 1rem 1.25rem;
+  }
+  .detail-loading {
+    color: var(--text-muted);
+    font-style: italic;
+    font-size: 0.85rem;
+  }
+
+  /* Hierarchy tree */
+  .hierarchy-section { margin-bottom: 0.75rem; }
+  .hierarchy-section:last-child { margin-bottom: 0; }
+  .hierarchy-section h4 {
+    font-size: 0.88rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text);
+  }
+  .hierarchy-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .hierarchy-item {
+    border-left: 2px solid var(--border);
+    padding-left: 0.75rem;
+  }
+  .hierarchy-header {
+    cursor: pointer;
+    padding: 0.35rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.82rem;
+    transition: background 0.1s;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .hierarchy-header:hover { background: rgba(255,255,255,0.03); }
+  .hierarchy-children {
+    margin-left: 0.75rem;
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+  .hierarchy-children.hidden { display: none; }
+  .text-muted { color: var(--text-muted); }
+
+  /* Strokes (leaf nodes — no expand) */
+  .stroke-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .stroke-item {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.82rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    border-left: 2px solid var(--border);
+    padding-left: 0.75rem;
+  }
 
   /* Pagination */
   .pagination {

@@ -7,10 +7,15 @@ import type {
   StandingOrder,
   ClockworksConfig,
 } from "@shardworks/nexus-core";
+import { renderTopNav } from "./commissions.js";
 
 /**
  * Render the full dashboard HTML page from the guild config.
  * Server-rendered — no client-side JS framework needed.
+ *
+ * This is the "Configuration" section of the dashboard — it displays
+ * guild configuration state (workshops, roles, tools, engines, training,
+ * clockworks). The top-level nav links to the Commissions section.
  */
 export function renderDashboard(config: GuildConfig): string {
   return `<!DOCTYPE html>
@@ -18,7 +23,7 @@ export function renderDashboard(config: GuildConfig): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(config.name)} — Guild Monitor</title>
+  <title>${esc(config.name)} — Configuration</title>
   <style>${CSS}</style>
 </head>
 <body>
@@ -31,6 +36,7 @@ export function renderDashboard(config: GuildConfig): string {
       </div>
     </div>
   </header>
+  ${renderTopNav("configuration")}
   <nav>
     <a href="#workshops">Workshops</a>
     <a href="#roles">Roles</a>
@@ -362,8 +368,8 @@ const CSS = `
   .badge-summon { background: rgba(108,140,255,0.15); color: var(--accent); }
   .badge-brief { background: rgba(251,191,36,0.15); color: var(--amber); }
 
-  /* Nav */
-  nav {
+  /* Top Nav — section-level navigation */
+  .top-nav {
     position: sticky;
     top: 0;
     z-index: 10;
@@ -375,19 +381,48 @@ const CSS = `
     max-width: 100%;
     overflow-x: auto;
   }
-  nav a {
+  .top-nav a {
     color: var(--text-muted);
     text-decoration: none;
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     font-weight: 500;
-    padding: 0.75rem 1rem;
+    padding: 0.75rem 1.25rem;
     border-bottom: 2px solid transparent;
     transition: color 0.15s, border-color 0.15s;
     white-space: nowrap;
   }
-  nav a:hover {
+  .top-nav a:hover {
     color: var(--text);
     border-bottom-color: var(--accent);
+  }
+  .top-nav a.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+
+  /* Sub Nav — within-section anchor links */
+  nav:not(.top-nav) {
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 0 2rem;
+    display: flex;
+    gap: 0;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  nav:not(.top-nav) a {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 0.6rem 1rem;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  nav:not(.top-nav) a:hover {
+    color: var(--text);
+    border-bottom-color: var(--accent-dim);
   }
 
   /* Main */

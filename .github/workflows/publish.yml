@@ -1,0 +1,85 @@
+name: Publish to npm
+
+on:
+  push:
+    branches: [main]
+
+# Prevent concurrent publishes — queue subsequent runs rather than cancelling,
+# so every push to main eventually gets a version.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write # needed to push git tags
+
+    steps:
+      - name: Checkout (full history for tag discovery)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Calculate next version
+        id: version
+        run: |
+          # Find the latest semver tag (vMAJOR.MINOR.PATCH) reachable from HEAD.
+          # Sort by version to pick the highest, not just the most recent commit.
+          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n 1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            # No semver tags exist yet — start at 0.1.0
+            NEXT_VERSION="0.1.0"
+            echo "No existing semver tags found. Starting at ${NEXT_VERSION}."
+          else
+            # Strip the leading 'v' and split into components
+            CURRENT="${LATEST_TAG#v}"
+            MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+            MINOR=$(echo "$CURRENT" | cut -d. -f2)
+            PATCH=$(echo "$CURRENT" | cut -d. -f3)
+
+            NEXT_PATCH=$((PATCH + 1))
+            NEXT_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+            echo "Latest tag: ${LATEST_TAG}. Next version: ${NEXT_VERSION}."
+          fi
+
+          echo "version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag does not already exist
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists. Aborting to avoid overwriting."
+            exit 1
+          fi
+
+      - name: Push git tag
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Set version in package.json (ephemeral, not committed)
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

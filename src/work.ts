@@ -239,82 +239,32 @@ const CLIENT_JS = `
     });
   }
 
-  // --- Render hierarchy sections ---
+  // --- Render hierarchy sections (writ-based) ---
 
-  function renderWorks(works) {
-    if (works.length === 0) return '<p class="empty">No works.</p>';
+  function renderWritChildren(children) {
+    if (children.length === 0) return '<p class="empty">No child writs.</p>';
     var html = '<div class="hierarchy-section">';
-    html += '<h4>Works <span class="count">(' + works.length + ')</span></h4>';
     html += '<div class="hierarchy-list">';
-    works.forEach(function(w) {
-      html += '<div class="hierarchy-item" data-type="work" data-id="' + esc(w.id) + '">';
+    children.forEach(function(w) {
+      var hasChildren = w.childCount > 0;
+      html += '<div class="hierarchy-item" data-type="writ" data-id="' + esc(w.id) + '">';
       html += '<div class="hierarchy-header">';
-      html += '<span class="expand-icon">&#9654;</span> ';
+      if (hasChildren) {
+        html += '<span class="expand-icon">&#9654;</span> ';
+      } else {
+        html += '<span class="expand-icon" style="visibility:hidden">&#9654;</span> ';
+      }
       html += '<span class="mono">' + esc(w.id) + '</span> ';
+      html += '<span class="badge badge-alt">' + esc(w.type) + '</span> ';
       html += badge(w.status) + ' ';
       html += '<strong>' + esc(w.title) + '</strong>';
-      if (w.description) html += ' <span class="text-muted">' + esc(truncate(w.description, 80)) + '</span>';
+      if (hasChildren) {
+        html += ' <span class="text-muted">(' + w.completedCount + '/' + w.childCount + ' done)</span>';
+      }
       html += '</div>';
-      html += '<div class="hierarchy-children hidden"></div>';
-      html += '</div>';
-    });
-    html += '</div></div>';
-    return html;
-  }
-
-  function renderPieces(pieces) {
-    if (pieces.length === 0) return '<p class="empty">No pieces.</p>';
-    var html = '<div class="hierarchy-section">';
-    html += '<h4>Pieces <span class="count">(' + pieces.length + ')</span></h4>';
-    html += '<div class="hierarchy-list">';
-    pieces.forEach(function(p) {
-      html += '<div class="hierarchy-item" data-type="piece" data-id="' + esc(p.id) + '">';
-      html += '<div class="hierarchy-header">';
-      html += '<span class="expand-icon">&#9654;</span> ';
-      html += '<span class="mono">' + esc(p.id) + '</span> ';
-      html += badge(p.status) + ' ';
-      html += '<strong>' + esc(p.title) + '</strong>';
-      if (p.description) html += ' <span class="text-muted">' + esc(truncate(p.description, 80)) + '</span>';
-      html += '</div>';
-      html += '<div class="hierarchy-children hidden"></div>';
-      html += '</div>';
-    });
-    html += '</div></div>';
-    return html;
-  }
-
-  function renderJobs(jobs) {
-    if (jobs.length === 0) return '<p class="empty">No jobs.</p>';
-    var html = '<div class="hierarchy-section">';
-    html += '<h4>Jobs <span class="count">(' + jobs.length + ')</span></h4>';
-    html += '<div class="hierarchy-list">';
-    jobs.forEach(function(j) {
-      html += '<div class="hierarchy-item" data-type="job" data-id="' + esc(j.id) + '">';
-      html += '<div class="hierarchy-header">';
-      html += '<span class="expand-icon">&#9654;</span> ';
-      html += '<span class="mono">' + esc(j.id) + '</span> ';
-      html += badge(j.status) + ' ';
-      html += '<strong>' + esc(j.title) + '</strong>';
-      if (j.assignee) html += ' <span class="badge badge-alt">' + esc(j.assignee) + '</span>';
-      if (j.description) html += ' <span class="text-muted">' + esc(truncate(j.description, 80)) + '</span>';
-      html += '</div>';
-      html += '<div class="hierarchy-children hidden"></div>';
-      html += '</div>';
-    });
-    html += '</div></div>';
-    return html;
-  }
-
-  function renderStrokes(strokes) {
-    if (strokes.length === 0) return '<p class="empty">No strokes.</p>';
-    var html = '<div class="hierarchy-section">';
-    html += '<h4>Strokes <span class="count">(' + strokes.length + ')</span></h4>';
-    html += '<div class="stroke-list">';
-    strokes.forEach(function(s) {
-      html += '<div class="stroke-item">';
-      html += badge(s.status) + ' ';
-      html += '<span class="badge badge-alt">' + esc(s.kind) + '</span> ';
-      if (s.content) html += '<span>' + esc(s.content) + '</span>';
+      if (hasChildren) {
+        html += '<div class="hierarchy-children hidden"></div>';
+      }
       html += '</div>';
     });
     html += '</div></div>';
@@ -341,16 +291,16 @@ const CLIENT_JS = `
           row.classList.add("selected");
           if (icon) icon.innerHTML = "&#9660;";
 
-          // Load works if not yet loaded
+          // Load child writs if not yet loaded
           var panel = detailRow.querySelector(".detail-panel");
           if (panel && panel.querySelector(".detail-loading")) {
-            fetchJson("/api/works?commissionId=" + encodeURIComponent(id))
-              .then(function(works) {
-                panel.innerHTML = renderWorks(works);
+            fetchJson("/api/writs/" + encodeURIComponent(id) + "/children")
+              .then(function(children) {
+                panel.innerHTML = renderWritChildren(children);
                 attachHierarchyListeners(panel);
               })
               .catch(function(err) {
-                panel.innerHTML = '<p class="empty">Failed to load works: ' + esc(err.message) + '</p>';
+                panel.innerHTML = '<p class="empty">Failed to load children: ' + esc(err.message) + '</p>';
               });
           }
         } else {
@@ -362,7 +312,7 @@ const CLIENT_JS = `
     });
   }
 
-  // Hierarchy item toggle (works, pieces, jobs)
+  // Hierarchy item toggle — generic writ children drill-down
   function attachHierarchyListeners(container) {
     container.querySelectorAll(".hierarchy-item").forEach(function(item) {
       // Only attach to direct header, not nested items
@@ -372,7 +322,6 @@ const CLIENT_JS = `
 
       header.addEventListener("click", function(e) {
         e.stopPropagation();
-        var type = item.dataset.type;
         var id = item.dataset.id;
         var children = item.querySelector(".hierarchy-children");
         var icon = header.querySelector(".expand-icon");
@@ -387,29 +336,14 @@ const CLIENT_JS = `
           // Fetch children if empty
           if (children.innerHTML.trim() === "") {
             children.innerHTML = '<span class="text-muted">Loading&hellip;</span>';
-            var url;
-            var renderer;
-            if (type === "work") {
-              url = "/api/pieces?workId=" + encodeURIComponent(id);
-              renderer = renderPieces;
-            } else if (type === "piece") {
-              url = "/api/jobs?pieceId=" + encodeURIComponent(id);
-              renderer = renderJobs;
-            } else if (type === "job") {
-              url = "/api/strokes?jobId=" + encodeURIComponent(id);
-              renderer = renderStrokes;
-            }
-
-            if (url && renderer) {
-              fetchJson(url)
-                .then(function(data) {
-                  children.innerHTML = renderer(data);
-                  attachHierarchyListeners(children);
-                })
-                .catch(function(err) {
-                  children.innerHTML = '<p class="empty">Failed to load: ' + esc(err.message) + '</p>';
-                });
-            }
+            fetchJson("/api/writs/" + encodeURIComponent(id) + "/children")
+              .then(function(data) {
+                children.innerHTML = renderWritChildren(data);
+                attachHierarchyListeners(children);
+              })
+              .catch(function(err) {
+                children.innerHTML = '<p class="empty">Failed to load: ' + esc(err.message) + '</p>';
+              });
           }
         } else {
           children.classList.add("hidden");

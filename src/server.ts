@@ -3,16 +3,18 @@ import {
   readGuildConfig,
   findGuildRoot,
   listCommissions,
-  listWorks,
-  listPieces,
-  listJobs,
-  listStrokes,
+  listWrits,
+  getWritChildren,
   listEvents,
   listDispatches,
   commission as postCommission,
   clockStart,
   clockStop,
   clockStatus,
+  createConversation,
+  takeTurn,
+  endConversation,
+  listAnimas,
 } from "@shardworks/nexus-core";
 import { renderDashboard } from "./dashboard.js";
 import { renderApiJson } from "./api.js";
@@ -21,9 +23,6 @@ import { renderClockworksPage } from "./clockworks.js";
 import {
   renderConsultationPage,
   getConsultableRoles,
-  startConsultation,
-  sendMessage as sendConsultationMessage,
-  cleanupConversation,
 } from "./consultation.js";
 
 export interface MonitorOptions {
@@ -152,41 +151,27 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // --- Hierarchy API routes ---
+      // --- Hierarchy API routes (writ-based) ---
 
-      // GET /api/works?commissionId=<id>
-      if (pathname === "/api/works" && req.method === "GET") {
-        const commissionId = url.searchParams.get("commissionId") ?? undefined;
-        const works = listWorks(home, { commissionId });
-        respondJson(res, works);
+      // GET /api/writs?parentId=<id>&type=<type>&status=<status>
+      if (pathname === "/api/writs" && req.method === "GET") {
+        const parentId = url.searchParams.get("parentId") ?? undefined;
+        const type = url.searchParams.get("type") ?? undefined;
+        const status = url.searchParams.get("status") as any ?? undefined;
+        const writs = listWrits(home, { parentId, type, status });
+        respondJson(res, writs);
         return;
       }
 
-      // GET /api/pieces?workId=<id>
-      if (pathname === "/api/pieces" && req.method === "GET") {
-        const workId = url.searchParams.get("workId") ?? undefined;
-        const pieces = listPieces(home, { workId });
-        respondJson(res, pieces);
+      // GET /api/writs/:id/children — direct children with progress counts
+      if (pathname.startsWith("/api/writs/") && pathname.endsWith("/children") && req.method === "GET") {
+        const writId = pathname.slice("/api/writs/".length, -"/children".length);
+        const children = getWritChildren(home, writId);
+        respondJson(res, children);
         return;
       }
 
-      // GET /api/jobs?pieceId=<id>
-      if (pathname === "/api/jobs" && req.method === "GET") {
-        const pieceId = url.searchParams.get("pieceId") ?? undefined;
-        const jobs = listJobs(home, { pieceId });
-        respondJson(res, jobs);
-        return;
-      }
-
-      // GET /api/strokes?jobId=<id>
-      if (pathname === "/api/strokes" && req.method === "GET") {
-        const jobId = url.searchParams.get("jobId") ?? undefined;
-        const strokes = listStrokes(home, { jobId });
-        respondJson(res, strokes);
-        return;
-      }
-
-      // --- Consultation API routes ---
+      // --- Consultation API routes (backed by core conversation API) ---
 
       // GET /api/roles — consultable roles for the dropdown
       if (pathname === "/api/roles" && req.method === "GET") {
@@ -195,7 +180,7 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // POST /api/consultation/start — begin a new consultation
+      // POST /api/consultation/start — create a conversation and take the first turn
       if (pathname === "/api/consultation/start" && req.method === "POST") {
         handleJsonBody(req, res, async (body) => {
           const role = typeof body.role === "string" ? body.role : "";
@@ -205,8 +190,45 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
             return;
           }
           try {
-            const result = await startConsultation(home, role, message);
-            respondJson(res, result);
+            // Find the anima for this role
+            const animas = listAnimas(home, { status: "active" });
+            const match = animas.find((a) => a.roles.includes(role));
+            if (!match) {
+              respondJsonError(res, 404, `No active anima found for role "${role}".`);
+              return;
+            }
+
+            // Create a consult conversation with human + anima participants
+            const conv = createConversation(home, {
+              kind: "consult",
+              topic: `Dashboard consultation with ${match.name} (${role})`,
+              participants: [
+                { kind: "human", name: "patron" },
+                { kind: "anima", name: match.name },
+              ],
+            });
+
+            // Find the anima participant ID for takeTurn
+            const animaParticipant = conv.participants.find((p) => p.kind === "anima");
+            if (!animaParticipant) {
+              respondJsonError(res, 500, "Failed to resolve anima participant.");
+              return;
+            }
+
+            // Take the first turn — collect all text chunks
+            const chunks = takeTurn(home, conv.conversationId, animaParticipant.id, message);
+            const textParts: string[] = [];
+            for await (const chunk of chunks) {
+              if (chunk.type === "text") {
+                textParts.push(chunk.text);
+              }
+            }
+
+            respondJson(res, {
+              conversationId: conv.conversationId,
+              participantId: animaParticipant.id,
+              response: textParts.join("") || "(No response)",
+            });
           } catch (err) {
             const msg = err instanceof Error ? err.message : "Failed to start consultation";
             respondJsonError(res, 500, msg);
@@ -215,18 +237,27 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // POST /api/consultation/message — send a follow-up message
+      // POST /api/consultation/message — send a follow-up message in an existing conversation
       if (pathname === "/api/consultation/message" && req.method === "POST") {
         handleJsonBody(req, res, async (body) => {
           const conversationId = typeof body.conversationId === "string" ? body.conversationId : "";
+          const participantId = typeof body.participantId === "string" ? body.participantId : "";
           const message = typeof body.message === "string" ? body.message : "";
-          if (!conversationId || !message) {
-            respondJsonError(res, 400, "Missing conversationId or message.");
+          if (!conversationId || !participantId || !message) {
+            respondJsonError(res, 400, "Missing conversationId, participantId, or message.");
             return;
           }
           try {
-            const result = await sendConsultationMessage(conversationId, message);
-            respondJson(res, result);
+            const chunks = takeTurn(home, conversationId, participantId, message);
+            const textParts: string[] = [];
+            for await (const chunk of chunks) {
+              if (chunk.type === "text") {
+                textParts.push(chunk.text);
+              }
+            }
+            respondJson(res, {
+              response: textParts.join("") || "(No response)",
+            });
           } catch (err) {
             const msg = err instanceof Error ? err.message : "Failed to send message";
             respondJsonError(res, 500, msg);
@@ -235,11 +266,15 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // POST /api/consultation/cleanup — clean up a conversation (best-effort)
+      // POST /api/consultation/cleanup — end a conversation (best-effort)
       if (pathname === "/api/consultation/cleanup" && req.method === "POST") {
         handleJsonBody(req, res, async (body) => {
           if (typeof body.conversationId === "string") {
-            cleanupConversation(body.conversationId);
+            try {
+              endConversation(home, body.conversationId, "abandoned");
+            } catch {
+              // Best-effort cleanup
+            }
           }
           respondJson(res, { ok: true });
         });

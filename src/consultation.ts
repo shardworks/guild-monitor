@@ -1,55 +1,17 @@
 /**
  * Consultation tab — chat-like interface for consulting guild animas by role.
  *
- * The server maintains in-memory conversation state per active consultation.
- * Each consultation spawns `claude --print` with the anima's manifest for
- * each turn, using `--resume` with the Claude session ID for multi-turn
- * continuity. No persistence across tab navigations or role changes.
+ * Conversations are managed by the core conversation API (createConversation,
+ * takeTurn, endConversation). This module provides only the page renderer
+ * and the role-listing helper. All conversation state is persistent in the
+ * guild database — no in-memory state is held here.
  */
 
-import { spawn } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import crypto from "node:crypto";
-import type { GuildConfig } from "@shardworks/nexus-core";
 import {
-  manifest,
   readGuildConfig,
   listAnimas,
 } from "@shardworks/nexus-core";
 import { renderTopNav, renderHeader } from "./clockworks.js";
-
-// ---------------------------------------------------------------------------
-// In-memory conversation state
-// ---------------------------------------------------------------------------
-
-interface Message {
-  role: "user" | "assistant";
-  content: string;
-}
-
-interface Conversation {
-  /** Random conversation ID for the client to reference. */
-  id: string;
-  /** Claude session ID from the --print result, used for --resume. */
-  claudeSessionId: string | null;
-  /** Temp directory holding the system prompt and MCP config files. */
-  tmpDir: string;
-  /** Path to the system prompt file within tmpDir. */
-  systemPromptPath: string;
-  /** Conversation history for client rendering. */
-  messages: Message[];
-  /** Whether a response is currently being generated. */
-  busy: boolean;
-  /** Role name for display purposes. */
-  role: string;
-  /** Anima name for display purposes. */
-  animaName: string;
-}
-
-/** Active conversations keyed by conversation ID. */
-const conversations = new Map<string, Conversation>();
 
 // ---------------------------------------------------------------------------
 // Public API for server routes
@@ -73,201 +35,6 @@ export function getConsultableRoles(home: string): Array<{ role: string; animaNa
     }
   }
   return results;
-}
-
-/**
- * Start a new consultation with the anima holding the given role.
- * Creates a fresh conversation state and sends the first user message.
- */
-export async function startConsultation(
-  home: string,
-  role: string,
-  userMessage: string,
-): Promise<{ conversationId: string; response: string }> {
-  // Find the anima for this role
-  const animas = listAnimas(home, { status: "active" });
-  const match = animas.find((a) => a.roles.includes(role));
-  if (!match) {
-    throw new Error(`No active anima found for role "${role}".`);
-  }
-
-  // Manifest the anima to get the system prompt
-  const manifestResult = await manifest(home, match.name);
-
-  // Create temp dir for session files
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nsg-consult-"));
-  const systemPromptPath = path.join(tmpDir, "system-prompt.md");
-  fs.writeFileSync(systemPromptPath, manifestResult.systemPrompt);
-
-  const conversationId = crypto.randomUUID();
-  const conversation: Conversation = {
-    id: conversationId,
-    claudeSessionId: null,
-    tmpDir,
-    systemPromptPath,
-    messages: [],
-    busy: true,
-    role,
-    animaName: match.name,
-  };
-
-  conversations.set(conversationId, conversation);
-
-  try {
-    const { text, sessionId } = await callClaude(conversation, userMessage);
-    conversation.messages.push({ role: "user", content: userMessage });
-    conversation.messages.push({ role: "assistant", content: text });
-    conversation.claudeSessionId = sessionId;
-    conversation.busy = false;
-    return { conversationId, response: text };
-  } catch (err) {
-    conversation.busy = false;
-    cleanupConversation(conversationId);
-    throw err;
-  }
-}
-
-/**
- * Send a follow-up message in an existing consultation.
- */
-export async function sendMessage(
-  conversationId: string,
-  userMessage: string,
-): Promise<{ response: string }> {
-  const conversation = conversations.get(conversationId);
-  if (!conversation) {
-    throw new Error("Conversation not found. It may have been cleaned up.");
-  }
-  if (conversation.busy) {
-    throw new Error("Conversation is busy — wait for the current response.");
-  }
-
-  conversation.busy = true;
-
-  try {
-    const { text, sessionId } = await callClaude(conversation, userMessage);
-    conversation.messages.push({ role: "user", content: userMessage });
-    conversation.messages.push({ role: "assistant", content: text });
-    if (sessionId) {
-      conversation.claudeSessionId = sessionId;
-    }
-    conversation.busy = false;
-    return { response: text };
-  } catch (err) {
-    conversation.busy = false;
-    throw err;
-  }
-}
-
-/**
- * Clean up a conversation's temp files and remove it from memory.
- */
-export function cleanupConversation(conversationId: string): void {
-  const conversation = conversations.get(conversationId);
-  if (conversation) {
-    try {
-      fs.rmSync(conversation.tmpDir, { recursive: true, force: true });
-    } catch {
-      // Best-effort cleanup
-    }
-    conversations.delete(conversationId);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Claude CLI interaction
-// ---------------------------------------------------------------------------
-
-/**
- * Spawn claude --print to get a response for the given message.
- * Uses --resume with the Claude session ID for multi-turn continuity.
- */
-function callClaude(
-  conversation: Conversation,
-  userMessage: string,
-): Promise<{ text: string; sessionId: string | null }> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "--setting-sources", "user",
-      "--dangerously-skip-permissions",
-      "--system-prompt-file", conversation.systemPromptPath,
-      "--print",
-      "--output-format", "stream-json",
-      "--verbose",
-    ];
-
-    // For follow-up turns, resume the existing Claude session
-    if (conversation.claudeSessionId) {
-      args.push("--resume", conversation.claudeSessionId);
-    }
-
-    // The user message is the positional argument
-    args.push(userMessage);
-
-    const proc = spawn("claude", args, {
-      cwd: process.cwd(),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    let buffer = "";
-    const textParts: string[] = [];
-    let sessionId: string | null = null;
-
-    proc.stdout.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString();
-      let newlineIdx: number;
-      while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, newlineIdx).trim();
-        buffer = buffer.slice(newlineIdx + 1);
-        if (!line) continue;
-        try {
-          const msg = JSON.parse(line);
-          if (msg.type === "assistant") {
-            const content = msg.message?.content;
-            if (content) {
-              for (const block of content) {
-                if (block.type === "text" && typeof block.text === "string") {
-                  textParts.push(block.text);
-                }
-              }
-            }
-          } else if (msg.type === "result") {
-            if (typeof msg.session_id === "string") {
-              sessionId = msg.session_id;
-            }
-            // Also capture text from result message if present
-            if (typeof msg.result === "string" && textParts.length === 0) {
-              textParts.push(msg.result);
-            }
-          }
-        } catch {
-          // Non-JSON line — skip
-        }
-      }
-    });
-
-    let stderrBuf = "";
-    proc.stderr.on("data", (chunk: Buffer) => {
-      stderrBuf += chunk.toString();
-    });
-
-    proc.on("error", (err: Error) => {
-      reject(new Error(`Failed to spawn claude: ${err.message}`));
-    });
-
-    proc.on("close", (code: number | null) => {
-      const text = textParts.join("");
-      if (code !== 0 && !text) {
-        const detail = stderrBuf.trim() || `exit code ${code}`;
-        reject(new Error(`Claude exited with error: ${detail}`));
-        return;
-      }
-      resolve({ text: text || "(No response)", sessionId });
-    });
-
-    // Close stdin immediately — we're in --print mode
-    proc.stdin.end();
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +129,7 @@ const CLIENT_JS = `
   // --- State ---
 
   var conversationId = null;
+  var participantId = null;
   var busy = false;
 
   // --- DOM refs ---
@@ -534,6 +302,7 @@ const CLIENT_JS = `
       url = "/api/consultation/message";
       body = JSON.stringify({
         conversationId: conversationId,
+        participantId: participantId,
         message: text,
       });
     }
@@ -553,6 +322,9 @@ const CLIENT_JS = `
         removeThinking();
         if (data.conversationId) {
           conversationId = data.conversationId;
+        }
+        if (data.participantId) {
+          participantId = data.participantId;
         }
         addMessage("assistant", data.response);
         setBusy(false);
@@ -586,6 +358,7 @@ const CLIENT_JS = `
       }).catch(function() {});
     }
     conversationId = null;
+    participantId = null;
     messagesEl.innerHTML = '<div class="empty-state"><p>Select a role above and start a consultation to begin chatting with a guild member.</p></div>';
     inputArea.classList.add("hidden");
     activeLabel.classList.add("hidden");

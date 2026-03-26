@@ -21,7 +21,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@shardworks/nexus-core": "^0.1.46"
+    "@shardworks/nexus-core": "^0.1.58"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -1,6 +1,4 @@
 import http from "node:http";
-import fs from "node:fs";
-import path from "node:path";
 import {
   readGuildConfig,
   findGuildRoot,
@@ -11,8 +9,10 @@ import {
   listStrokes,
   listEvents,
   listDispatches,
-  nexusDir,
   commission as postCommission,
+  clockStart,
+  clockStop,
+  clockStatus,
 } from "@shardworks/nexus-core";
 import { renderDashboard } from "./dashboard.js";
 import { renderApiJson } from "./api.js";
@@ -64,9 +64,41 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // GET /api/clock-status — lightweight poll target for header badge
+      // GET /api/clock-status — returns full daemon status for header badge and status card
       if (pathname === "/api/clock-status" && req.method === "GET") {
-        respondJson(res, { running: isClockRunning(home) });
+        respondJson(res, clockStatus(home));
+        return;
+      }
+
+      // POST /api/clock-start — start the clockworks daemon
+      if (pathname === "/api/clock-start" && req.method === "POST") {
+        try {
+          const result = clockStart(home);
+          respondJson(res, result);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Failed to start clockworks";
+          res.writeHead(409, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ error: msg }));
+        }
+        return;
+      }
+
+      // POST /api/clock-stop — stop the clockworks daemon
+      if (pathname === "/api/clock-stop" && req.method === "POST") {
+        try {
+          const result = clockStop(home);
+          respondJson(res, result);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Failed to stop clockworks";
+          res.writeHead(409, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ error: msg }));
+        }
         return;
       }
 
@@ -150,7 +182,7 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
       // --- Page routes ---
 
       // Read clock daemon status for the header badge
-      const clockRunning = isClockRunning(home);
+      const clockRunning = clockStatus(home).running;
 
       // Clockworks section
       if (pathname === "/clockworks") {
@@ -226,30 +258,7 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Clock daemon status — checks if the clockworks daemon process is alive
-// ---------------------------------------------------------------------------
-
-/**
- * Check if the clockworks daemon is currently running.
- *
- * Reads the PID from .nexus/clock.pid and sends signal 0 to verify the
- * process is alive. Returns false if the PID file doesn't exist or the
- * process isn't running.
- */
-function isClockRunning(home: string): boolean {
-  const pidPath = path.join(nexusDir(home), "clock.pid");
-  try {
-    const pidStr = fs.readFileSync(pidPath, "utf-8").trim();
-    const pid = parseInt(pidStr, 10);
-    if (Number.isNaN(pid)) return false;
-    // signal 0 tests whether the process exists without actually sending a signal
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
+// Clock daemon status is now provided by clockStatus() from nexus-core.
 
 // ---------------------------------------------------------------------------
 // JSON response helper

@@ -104,13 +104,23 @@ function renderDaemonStatus(running: boolean): string {
   const statusClass = running ? "status-running" : "status-stopped";
   const statusLabel = running ? "Running" : "Stopped";
 
+  const startBtn = `<button class="btn btn-start" id="clock-start-btn"${running ? " disabled" : ""}>Start</button>`;
+  const stopBtn = `<button class="btn btn-stop" id="clock-stop-btn"${running ? "" : " disabled"}>Stop</button>`;
+
   return `<section id="daemon-status">
     <h2>Daemon Status</h2>
     <div class="status-card ${statusClass}">
-      <div class="status-indicator">
-        <span class="status-dot"></span>
-        <span class="status-label">${statusLabel}</span>
+      <div class="status-row">
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span class="status-label">${statusLabel}</span>
+        </div>
+        <div class="status-actions">
+          ${startBtn}
+          ${stopBtn}
+        </div>
       </div>
+      <div id="clock-error" class="clock-error hidden"></div>
     </div>
   </section>`;
 }
@@ -303,6 +313,49 @@ const CLIENT_JS = `
     });
   }
 
+  // --- Clock start/stop controls ---
+
+  var clockBusy = false;
+
+  function clockAction(action) {
+    if (clockBusy) return;
+    clockBusy = true;
+
+    var startBtn = document.getElementById("clock-start-btn");
+    var stopBtn = document.getElementById("clock-stop-btn");
+    var errorEl = document.getElementById("clock-error");
+
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = true;
+    if (errorEl) { errorEl.textContent = ""; errorEl.classList.add("hidden"); }
+
+    fetch("/api/clock-" + action, { method: "POST" })
+      .then(function(r) {
+        return r.json().then(function(data) {
+          if (!r.ok) throw new Error(data.error || "Request failed");
+          // Immediately refresh status to update badge and buttons
+          refreshClockStatus();
+        });
+      })
+      .catch(function(err) {
+        if (errorEl) {
+          errorEl.textContent = err.message;
+          errorEl.classList.remove("hidden");
+        }
+        // Re-enable buttons on error
+        clockBusy = false;
+        refreshClockStatus();
+      })
+      .finally(function() {
+        clockBusy = false;
+      });
+  }
+
+  var startBtn = document.getElementById("clock-start-btn");
+  var stopBtn = document.getElementById("clock-stop-btn");
+  if (startBtn) startBtn.addEventListener("click", function() { clockAction("start"); });
+  if (stopBtn) stopBtn.addEventListener("click", function() { clockAction("stop"); });
+
   // --- Event row expand/collapse ---
 
   function attachEventListeners() {
@@ -344,7 +397,7 @@ const CLIENT_JS = `
     return Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
   }
 
-  // Update clock status badge in header
+  // Update clock status badge in header, daemon card, and start/stop buttons
   function refreshClockStatus() {
     fetchJson("/api/clock-status")
       .then(function(data) {
@@ -366,9 +419,17 @@ const CLIENT_JS = `
           var wasRunning = card.classList.contains("status-running");
           if (data.running !== wasRunning) {
             card.className = "status-card " + (data.running ? "status-running" : "status-stopped");
-            var dot = card.querySelector(".status-label");
-            if (dot) dot.textContent = data.running ? "Running" : "Stopped";
+            var label = card.querySelector(".status-label");
+            if (label) label.textContent = data.running ? "Running" : "Stopped";
           }
+        }
+
+        // Update start/stop button states
+        if (!clockBusy) {
+          var startBtn = document.getElementById("clock-start-btn");
+          var stopBtn = document.getElementById("clock-stop-btn");
+          if (startBtn) startBtn.disabled = data.running;
+          if (stopBtn) stopBtn.disabled = !data.running;
         }
       })
       .catch(function() {});
@@ -658,11 +719,61 @@ const CSS = `
   .status-card.status-stopped {
     border-color: var(--border);
   }
+  .status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .status-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .btn {
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    font-weight: 500;
+    padding: 0.4em 1em;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, opacity 0.15s;
+  }
+  .btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+    pointer-events: none;
+  }
+  .btn-start {
+    background: rgba(74,222,128,0.12);
+    color: var(--green);
+    border-color: rgba(74,222,128,0.25);
+  }
+  .btn-start:hover:not(:disabled) {
+    background: rgba(74,222,128,0.22);
+  }
+  .btn-stop {
+    background: rgba(248,113,113,0.12);
+    color: var(--red);
+    border-color: rgba(248,113,113,0.25);
+  }
+  .btn-stop:hover:not(:disabled) {
+    background: rgba(248,113,113,0.22);
+  }
+  .clock-error {
+    margin-top: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.82rem;
+    color: var(--red);
+    background: rgba(248,113,113,0.08);
+    border-left: 3px solid var(--red);
+    border-radius: 0 4px 4px 0;
+  }
+  .clock-error.hidden { display: none; }
   .status-indicator {
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    margin-bottom: 0.5rem;
   }
   .status-dot {
     display: inline-block;

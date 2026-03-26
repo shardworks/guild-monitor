@@ -63,6 +63,7 @@ export function renderConsultationPage(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(guildName)} — Consultation</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
   <style>${CSS}</style>
 </head>
 <body>
@@ -178,7 +179,12 @@ const CLIENT_JS = `
 
     var body = document.createElement("div");
     body.className = "message-body";
-    body.innerHTML = formatContent(content);
+    if (role === "assistant" && typeof marked !== "undefined") {
+      body.classList.add("markdown-body");
+      body.innerHTML = marked.parse(content, { breaks: true });
+    } else {
+      body.innerHTML = formatContent(content);
+    }
 
     div.appendChild(label);
     div.appendChild(body);
@@ -590,7 +596,7 @@ const CSS = `
     border-color: var(--accent-dim);
   }
 
-  /* Chat area */
+  /* Chat area — bounded box with scrollable messages */
   .chat-area {
     flex: 1;
     display: flex;
@@ -599,6 +605,7 @@ const CSS = `
     border: 1px solid var(--border);
     border-radius: var(--radius);
     min-height: 400px;
+    max-height: 75vh;
     overflow: hidden;
   }
 
@@ -665,12 +672,99 @@ const CSS = `
   .message-body {
     white-space: pre-wrap;
   }
+  /* Markdown-rendered assistant messages */
+  .message-body.markdown-body {
+    white-space: normal;
+  }
+  .message-body.markdown-body p {
+    margin: 0 0 0.5em 0;
+  }
+  .message-body.markdown-body p:last-child {
+    margin-bottom: 0;
+  }
+  .message-body.markdown-body h1,
+  .message-body.markdown-body h2,
+  .message-body.markdown-body h3,
+  .message-body.markdown-body h4,
+  .message-body.markdown-body h5,
+  .message-body.markdown-body h6 {
+    margin: 0.75em 0 0.35em 0;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .message-body.markdown-body h1:first-child,
+  .message-body.markdown-body h2:first-child,
+  .message-body.markdown-body h3:first-child {
+    margin-top: 0;
+  }
+  .message-body.markdown-body h1 { font-size: 1.2em; }
+  .message-body.markdown-body h2 { font-size: 1.1em; }
+  .message-body.markdown-body h3 { font-size: 1.0em; }
+  .message-body.markdown-body ul,
+  .message-body.markdown-body ol {
+    margin: 0.4em 0;
+    padding-left: 1.5em;
+  }
+  .message-body.markdown-body li {
+    margin: 0.2em 0;
+  }
+  .message-body.markdown-body blockquote {
+    border-left: 3px solid var(--accent-dim);
+    padding: 0.25em 0.75em;
+    margin: 0.5em 0;
+    color: var(--text-muted);
+  }
+  .message-body.markdown-body hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 0.75em 0;
+  }
+  .message-body.markdown-body table {
+    border-collapse: collapse;
+    margin: 0.5em 0;
+    font-size: 0.88em;
+    width: 100%;
+  }
+  .message-body.markdown-body th,
+  .message-body.markdown-body td {
+    border: 1px solid var(--border);
+    padding: 0.35em 0.65em;
+    text-align: left;
+  }
+  .message-body.markdown-body th {
+    background: rgba(255,255,255,0.04);
+    font-weight: 600;
+  }
+  .message-body.markdown-body a {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .message-body.markdown-body strong {
+    font-weight: 600;
+  }
   .message-body code {
     font-family: var(--mono);
     font-size: 0.82rem;
     background: rgba(255,255,255,0.06);
     padding: 0.15em 0.35em;
     border-radius: 3px;
+  }
+  .message-body pre {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.75rem;
+    margin: 0.5rem 0;
+    overflow-x: auto;
+    white-space: pre;
+    line-height: 1.5;
+  }
+  .message-body pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
   }
   .message-body .code-block {
     font-family: var(--mono);

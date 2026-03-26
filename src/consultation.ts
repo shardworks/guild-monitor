@@ -7,11 +7,22 @@
  * guild database — no in-memory state is held here.
  */
 
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
   readGuildConfig,
   listAnimas,
 } from "@shardworks/nexus-core";
 import { renderTopNav, renderHeader } from "./clockworks.js";
+
+// ---------------------------------------------------------------------------
+// Load marked UMD source at module init — inlined into the page HTML so
+// markdown rendering works without internet access (no CDN dependency).
+// ---------------------------------------------------------------------------
+
+const require = createRequire(import.meta.url);
+const MARKED_UMD_PATH = require.resolve("marked/marked.min.js");
+const MARKED_SOURCE = readFileSync(MARKED_UMD_PATH, "utf-8");
 
 // ---------------------------------------------------------------------------
 // Public API for server routes
@@ -63,7 +74,7 @@ export function renderConsultationPage(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(guildName)} — Consultation</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+  <script>${MARKED_SOURCE}</script>
   <style>${CSS}</style>
 </head>
 <body>

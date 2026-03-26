@@ -1,7 +1,9 @@
 import http from "node:http";
+import Database from "better-sqlite3";
 import {
   readGuildConfig,
   findGuildRoot,
+  booksPath,
   listCommissions,
   listWrits,
   getWritChildren,
@@ -123,6 +125,20 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
           totalPages,
           items: all.slice(start, start + pageSize),
         });
+        return;
+      }
+
+      // GET /api/commissions/:id/children — resolve commission → mandate writ → children
+      if (pathname.startsWith("/api/commissions/") && pathname.endsWith("/children") && req.method === "GET") {
+        const commissionId = pathname.slice("/api/commissions/".length, -"/children".length);
+        const writId = getCommissionWritId(home, commissionId);
+        if (writId) {
+          const children = getWritChildren(home, writId);
+          respondJson(res, children);
+        } else {
+          // No linked mandate writ — return empty array
+          respondJson(res, []);
+        }
         return;
       }
 
@@ -497,6 +513,26 @@ function handleJsonBody(
       respondJsonError(res, 500, "Request error");
     }
   });
+}
+
+/**
+ * Look up the mandate writ ID linked to a commission.
+ *
+ * The core API doesn't expose the commission → writ_id mapping directly,
+ * so we read it from the commissions table. This is a single-column lookup
+ * that mirrors the pattern used internally by checkCommissionCompletion().
+ */
+function getCommissionWritId(home: string, commissionId: string): string | null {
+  const db = new Database(booksPath(home));
+  db.pragma("foreign_keys = ON");
+  try {
+    const row = db.prepare("SELECT writ_id FROM commissions WHERE id = ?").get(commissionId) as
+      | { writ_id: string | null }
+      | undefined;
+    return row?.writ_id ?? null;
+  } finally {
+    db.close();
+  }
 }
 
 /** Send an error response as JSON. */

@@ -294,7 +294,7 @@ const CLIENT_JS = `
           // Load child writs if not yet loaded
           var panel = detailRow.querySelector(".detail-panel");
           if (panel && panel.querySelector(".detail-loading")) {
-            fetchJson("/api/writs/" + encodeURIComponent(id) + "/children")
+            fetchJson("/api/commissions/" + encodeURIComponent(id) + "/children")
               .then(function(children) {
                 panel.innerHTML = renderWritChildren(children);
                 attachHierarchyListeners(panel);

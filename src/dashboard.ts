@@ -7,7 +7,6 @@ import type {
   StandingOrder,
   ClockworksConfig,
 } from "@shardworks/nexus-core";
-import { VERSION } from "@shardworks/nexus-core";
 import { renderTopNav, renderHeader } from "./clockworks.js";
 
 /**
@@ -28,7 +27,7 @@ export function renderDashboard(config: GuildConfig, clockRunning: boolean): str
   <style>${CSS}</style>
 </head>
 <body>
-  ${renderHeader(config.name, VERSION, config.model, clockRunning)}
+  ${renderHeader(config.name, config.nexus, config.model, clockRunning)}
   ${renderTopNav("configuration")}
   <nav>
     <a href="#workshops">Workshops</a>

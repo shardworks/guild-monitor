@@ -12,7 +12,6 @@ import {
   listEvents,
   listDispatches,
   nexusDir,
-  VERSION,
   commission as postCommission,
 } from "@shardworks/nexus-core";
 import { renderDashboard } from "./dashboard.js";
@@ -115,7 +114,7 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
           dispatches,
           page,
           config.name,
-          VERSION,
+          config.nexus,
           config.model,
         );
         res.writeHead(200, {
@@ -135,7 +134,7 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
           config.workshops,
           page,
           config.name,
-          VERSION,
+          config.nexus,
           config.model,
           clockRunning,
         );

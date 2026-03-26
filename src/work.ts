@@ -323,40 +323,44 @@ const CLIENT_JS = `
 
   // --- Expand/collapse logic ---
 
-  // Commission row toggle
-  document.querySelectorAll(".commission-row").forEach(function(row) {
-    row.addEventListener("click", function() {
-      var id = row.dataset.commissionId;
-      var detailRow = document.getElementById("detail-" + id);
-      if (!detailRow) return;
+  function attachCommissionListeners() {
+    document.querySelectorAll(".commission-row").forEach(function(row) {
+      if (row.dataset.bound) return;
+      row.dataset.bound = "1";
 
-      var isHidden = detailRow.classList.contains("hidden");
-      var icon = row.querySelector(".expand-icon");
+      row.addEventListener("click", function() {
+        var id = row.dataset.commissionId;
+        var detailRow = document.getElementById("detail-" + id);
+        if (!detailRow) return;
 
-      if (isHidden) {
-        detailRow.classList.remove("hidden");
-        row.classList.add("selected");
-        if (icon) icon.innerHTML = "&#9660;";
+        var isHidden = detailRow.classList.contains("hidden");
+        var icon = row.querySelector(".expand-icon");
 
-        // Load works if not yet loaded
-        var panel = detailRow.querySelector(".detail-panel");
-        if (panel && panel.querySelector(".detail-loading")) {
-          fetchJson("/api/works?commissionId=" + encodeURIComponent(id))
-            .then(function(works) {
-              panel.innerHTML = renderWorks(works);
-              attachHierarchyListeners(panel);
-            })
-            .catch(function(err) {
-              panel.innerHTML = '<p class="empty">Failed to load works: ' + esc(err.message) + '</p>';
-            });
+        if (isHidden) {
+          detailRow.classList.remove("hidden");
+          row.classList.add("selected");
+          if (icon) icon.innerHTML = "&#9660;";
+
+          // Load works if not yet loaded
+          var panel = detailRow.querySelector(".detail-panel");
+          if (panel && panel.querySelector(".detail-loading")) {
+            fetchJson("/api/works?commissionId=" + encodeURIComponent(id))
+              .then(function(works) {
+                panel.innerHTML = renderWorks(works);
+                attachHierarchyListeners(panel);
+              })
+              .catch(function(err) {
+                panel.innerHTML = '<p class="empty">Failed to load works: ' + esc(err.message) + '</p>';
+              });
+          }
+        } else {
+          detailRow.classList.add("hidden");
+          row.classList.remove("selected");
+          if (icon) icon.innerHTML = "&#9654;";
         }
-      } else {
-        detailRow.classList.add("hidden");
-        row.classList.remove("selected");
-        if (icon) icon.innerHTML = "&#9654;";
-      }
+      });
     });
-  });
+  }
 
   // Hierarchy item toggle (works, pieces, jobs)
   function attachHierarchyListeners(container) {
@@ -414,6 +418,145 @@ const CLIENT_JS = `
       });
     });
   }
+
+  // --- Initial binding ---
+  attachCommissionListeners();
+
+  // =========================================================================
+  // Auto-refresh — poll for changes and patch the DOM without flickering
+  // =========================================================================
+
+  var POLL_INTERVAL = 3000; // 3 seconds
+
+  // Track the current page from the URL
+  function currentPage() {
+    var params = new URLSearchParams(window.location.search);
+    return Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  }
+
+  // Update the clock status badge in the header without a full redraw
+  function refreshClockStatus() {
+    fetchJson("/api/clock-status")
+      .then(function(data) {
+        var badges = document.querySelectorAll(".badge-clock-running, .badge-clock-stopped");
+        badges.forEach(function(el) {
+          if (data.running) {
+            el.className = "badge badge-clock-running";
+            el.textContent = "Clock: Running";
+          } else {
+            el.className = "badge badge-clock-stopped";
+            el.textContent = "Clock: Stopped";
+          }
+        });
+      })
+      .catch(function() { /* silent — next poll will retry */ });
+  }
+
+  // Update the footer timestamp
+  function refreshTimestamp() {
+    var footer = document.querySelector("footer p");
+    if (footer) {
+      footer.innerHTML = "Guild Monitor &middot; Refreshed at " + new Date().toLocaleTimeString();
+    }
+  }
+
+  // Patch the commission table in place — update existing rows, add new ones,
+  // remove stale ones, all while preserving expand/collapse state.
+  function refreshCommissions() {
+    var page = currentPage();
+    fetchJson("/api/commissions?page=" + page)
+      .then(function(data) {
+        var items = data.items || [];
+        var total = data.total || 0;
+
+        // Update the section heading count
+        var heading = document.querySelector("#commission-list h2");
+        if (heading) {
+          heading.innerHTML = 'Commissions <span class="count">(' + total + ')</span>';
+        }
+
+        var tbody = document.querySelector("#commission-list tbody");
+        if (!tbody) return;
+
+        // Build a set of IDs we received
+        var newIds = {};
+        items.forEach(function(c) { newIds[c.id] = c; });
+
+        // Track which IDs are already in the DOM
+        var existingRows = tbody.querySelectorAll(".commission-row");
+        var existingIds = {};
+        existingRows.forEach(function(row) {
+          existingIds[row.dataset.commissionId] = row;
+        });
+
+        // Update existing rows in place (status, dates, spec) — skip if expanded
+        Object.keys(existingIds).forEach(function(id) {
+          var c = newIds[id];
+          var row = existingIds[id];
+          if (!c) {
+            // Commission no longer on this page — remove both rows
+            var detail = document.getElementById("detail-" + id);
+            if (detail) detail.remove();
+            row.remove();
+            return;
+          }
+          // Patch cells: [expand, id, status, workshop, spec, created, updated]
+          var cells = row.querySelectorAll("td");
+          if (cells.length >= 7) {
+            // Status badge (cell 2)
+            var newBadge = badge(c.status);
+            if (cells[2].innerHTML !== newBadge) cells[2].innerHTML = newBadge;
+            // Spec preview (cell 4)
+            var newSpec = esc(truncate(c.content, 120));
+            if (cells[4].textContent !== truncate(c.content, 120)) cells[4].innerHTML = newSpec;
+            // Updated date (cell 6)
+            var newDate = fmtDate(c.updatedAt);
+            if (cells[6].textContent !== newDate) cells[6].textContent = newDate;
+          }
+        });
+
+        // Add new commissions that weren't in the DOM
+        items.forEach(function(c) {
+          if (existingIds[c.id]) return;
+          // Build the two rows (commission + detail) and append to tbody
+          var frag = document.createDocumentFragment();
+          var tr = document.createElement("tr");
+          tr.className = "commission-row";
+          tr.dataset.commissionId = c.id;
+          tr.innerHTML =
+            '<td class="expand-cell"><span class="expand-icon">&#9654;</span></td>' +
+            '<td class="mono">' + esc(c.id) + '</td>' +
+            '<td>' + badge(c.status) + '</td>' +
+            '<td class="mono">' + esc(c.workshop) + '</td>' +
+            '<td class="spec-preview">' + esc(truncate(c.content, 120)) + '</td>' +
+            '<td class="nowrap">' + fmtDate(c.createdAt) + '</td>' +
+            '<td class="nowrap">' + fmtDate(c.updatedAt) + '</td>';
+          frag.appendChild(tr);
+
+          var detailTr = document.createElement("tr");
+          detailTr.className = "detail-row hidden";
+          detailTr.id = "detail-" + c.id;
+          detailTr.innerHTML =
+            '<td colspan="7"><div class="detail-panel">' +
+            '<div class="detail-loading">Loading&hellip;</div>' +
+            '</div></td>';
+          frag.appendChild(detailTr);
+
+          tbody.appendChild(frag);
+        });
+
+        // Re-bind click handlers for any new rows
+        attachCommissionListeners();
+      })
+      .catch(function() { /* silent — next poll will retry */ });
+  }
+
+  // --- Start polling ---
+  setInterval(function() {
+    refreshCommissions();
+    refreshClockStatus();
+    refreshTimestamp();
+  }, POLL_INTERVAL);
 })();
 `;
 

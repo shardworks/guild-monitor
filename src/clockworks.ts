@@ -265,26 +265,241 @@ const CLIENT_JS = `
 (function() {
   "use strict";
 
-  document.querySelectorAll(".event-row").forEach(function(row) {
-    row.addEventListener("click", function() {
-      var id = row.dataset.eventId;
-      var detailRow = document.getElementById("detail-" + id);
-      if (!detailRow) return;
+  // --- Helpers ---
 
-      var isHidden = detailRow.classList.contains("hidden");
-      var icon = row.querySelector(".expand-icon");
+  function esc(str) {
+    var d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+  }
 
-      if (isHidden) {
-        detailRow.classList.remove("hidden");
-        row.classList.add("selected");
-        if (icon) icon.innerHTML = "&#9660;";
-      } else {
-        detailRow.classList.add("hidden");
-        row.classList.remove("selected");
-        if (icon) icon.innerHTML = "&#9654;";
-      }
+  function badge(status) {
+    var cls = {
+      posted: "badge-posted", active: "badge-active", in_progress: "badge-active",
+      open: "badge-posted", completed: "badge-completed", cancelled: "badge-cancelled",
+      failed: "badge-failed", pending: "badge-posted", complete: "badge-completed",
+      success: "badge-completed", error: "badge-failed"
+    }[status] || "badge-alt";
+    return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
+  }
+
+  function fmtDateTime(iso) {
+    try {
+      var d = new Date(iso);
+      return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
+        " " + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    } catch(e) { return esc(iso); }
+  }
+
+  function fmtDuration(ms) {
+    if (ms < 1000) return ms + "ms";
+    return (ms / 1000).toFixed(1) + "s";
+  }
+
+  function fetchJson(url) {
+    return fetch(url).then(function(r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
     });
-  });
+  }
+
+  // --- Event row expand/collapse ---
+
+  function attachEventListeners() {
+    document.querySelectorAll(".event-row").forEach(function(row) {
+      if (row.dataset.bound) return;
+      row.dataset.bound = "1";
+
+      row.addEventListener("click", function() {
+        var id = row.dataset.eventId;
+        var detailRow = document.getElementById("detail-" + id);
+        if (!detailRow) return;
+
+        var isHidden = detailRow.classList.contains("hidden");
+        var icon = row.querySelector(".expand-icon");
+
+        if (isHidden) {
+          detailRow.classList.remove("hidden");
+          row.classList.add("selected");
+          if (icon) icon.innerHTML = "&#9660;";
+        } else {
+          detailRow.classList.add("hidden");
+          row.classList.remove("selected");
+          if (icon) icon.innerHTML = "&#9654;";
+        }
+      });
+    });
+  }
+
+  attachEventListeners();
+
+  // =========================================================================
+  // Auto-refresh polling
+  // =========================================================================
+
+  var POLL_INTERVAL = 3000;
+
+  function currentPage() {
+    var params = new URLSearchParams(window.location.search);
+    return Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  }
+
+  // Update clock status badge in header
+  function refreshClockStatus() {
+    fetchJson("/api/clock-status")
+      .then(function(data) {
+        // Update header badge
+        var badges = document.querySelectorAll(".badge-clock-running, .badge-clock-stopped");
+        badges.forEach(function(el) {
+          if (data.running) {
+            el.className = "badge badge-clock-running";
+            el.textContent = "Clock: Running";
+          } else {
+            el.className = "badge badge-clock-stopped";
+            el.textContent = "Clock: Stopped";
+          }
+        });
+
+        // Update daemon status card
+        var card = document.querySelector(".status-card");
+        if (card) {
+          var wasRunning = card.classList.contains("status-running");
+          if (data.running !== wasRunning) {
+            card.className = "status-card " + (data.running ? "status-running" : "status-stopped");
+            var dot = card.querySelector(".status-label");
+            if (dot) dot.textContent = data.running ? "Running" : "Stopped";
+          }
+        }
+      })
+      .catch(function() {});
+  }
+
+  function refreshTimestamp() {
+    var footer = document.querySelector("footer p");
+    if (footer) {
+      footer.innerHTML = "Guild Monitor &middot; Refreshed at " + new Date().toLocaleTimeString();
+    }
+  }
+
+  // Patch the events table in place
+  function refreshEvents() {
+    var page = currentPage();
+    fetchJson("/api/events?page=" + page)
+      .then(function(data) {
+        var items = data.items || [];
+        var total = data.total || 0;
+
+        // Update heading count
+        var heading = document.querySelector("#events h2");
+        if (heading) {
+          heading.innerHTML = 'Events <span class="count">(' + total + ')</span>';
+        }
+
+        var tbody = document.querySelector("#events tbody");
+        if (!tbody) return;
+
+        // Build lookup of existing rows
+        var existingRows = {};
+        tbody.querySelectorAll(".event-row").forEach(function(row) {
+          existingRows[row.dataset.eventId] = row;
+        });
+
+        // Build set of new IDs
+        var newIds = {};
+        items.forEach(function(e) { newIds[e.id] = e; });
+
+        // Remove rows no longer on this page
+        Object.keys(existingRows).forEach(function(id) {
+          if (!newIds[id]) {
+            var detail = document.getElementById("detail-" + id);
+            if (detail) detail.remove();
+            existingRows[id].remove();
+          }
+        });
+
+        // Add new events that aren't in the DOM yet
+        items.forEach(function(e) {
+          if (existingRows[e.id]) return;
+
+          var tr = document.createElement("tr");
+          tr.className = "event-row";
+          tr.dataset.eventId = e.id;
+          tr.innerHTML =
+            '<td class="expand-cell"><span class="expand-icon">&#9654;</span></td>' +
+            '<td class="mono">' + esc(e.id) + '</td>' +
+            '<td><span class="badge badge-event">' + esc(e.name) + '</span></td>' +
+            '<td class="mono">' + esc(e.emitter) + '</td>' +
+            '<td class="nowrap">' + fmtDateTime(e.firedAt) + '</td>';
+
+          var detailTr = document.createElement("tr");
+          detailTr.className = "detail-row hidden";
+          detailTr.id = "detail-" + e.id;
+          detailTr.innerHTML =
+            '<td colspan="5"><div class="detail-panel">' +
+            '<h4>Payload</h4>' +
+            '<pre class="payload-json">' + esc(JSON.stringify(e.payload, null, 2)) + '</pre>' +
+            '</div></td>';
+
+          tbody.appendChild(tr);
+          tbody.appendChild(detailTr);
+        });
+
+        attachEventListeners();
+      })
+      .catch(function() {});
+  }
+
+  // Rebuild the dispatches table (no expand state to preserve, so a
+  // targeted rebuild is safe — we only touch the tbody)
+  function refreshDispatches() {
+    fetchJson("/api/dispatches")
+      .then(function(dispatches) {
+        var heading = document.querySelector("#dispatches h2");
+        if (heading) {
+          heading.innerHTML = 'Recent Dispatches <span class="count">(' + dispatches.length + ')</span>';
+        }
+
+        var tbody = document.querySelector("#dispatches tbody");
+        if (!tbody) return;
+
+        // Build new HTML for the tbody
+        var html = "";
+        dispatches.forEach(function(d) {
+          var duration = (d.startedAt && d.endedAt)
+            ? fmtDuration(new Date(d.endedAt).getTime() - new Date(d.startedAt).getTime())
+            : "&mdash;";
+          var statusCls = d.status === "success" ? "badge-completed"
+            : d.status === "error" ? "badge-failed" : "badge-alt";
+
+          html += '<tr>' +
+            '<td class="mono">' + esc(d.eventId) + '</td>' +
+            '<td class="mono">' + esc(d.handlerName) + '</td>' +
+            '<td><span class="badge badge-alt">' + esc(d.handlerType) + '</span>' +
+              (d.noticeType ? ' <span class="badge badge-alt">' + esc(d.noticeType) + '</span>' : '') + '</td>' +
+            '<td>' + (d.status ? '<span class="badge ' + statusCls + '">' + esc(d.status) + '</span>' : '&mdash;') + '</td>' +
+            '<td class="mono nowrap">' + duration + '</td>' +
+            '<td class="nowrap">' + (d.startedAt ? fmtDateTime(d.startedAt) : '&mdash;') + '</td>' +
+            '</tr>';
+          if (d.error) {
+            html += '<tr class="error-row"><td colspan="6"><div class="error-detail">' + esc(d.error) + '</div></td></tr>';
+          }
+        });
+
+        // Only update if content actually changed (avoid flicker)
+        if (tbody.innerHTML !== html) {
+          tbody.innerHTML = html;
+        }
+      })
+      .catch(function() {});
+  }
+
+  // --- Start polling ---
+  setInterval(function() {
+    refreshEvents();
+    refreshDispatches();
+    refreshClockStatus();
+    refreshTimestamp();
+  }, POLL_INTERVAL);
 })();
 `;
 

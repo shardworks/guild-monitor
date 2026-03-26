@@ -64,6 +64,55 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
+      // GET /api/clock-status — lightweight poll target for header badge
+      if (pathname === "/api/clock-status" && req.method === "GET") {
+        respondJson(res, { running: isClockRunning(home) });
+        return;
+      }
+
+      // GET /api/commissions?page=N — paginated commission list for polling
+      if (pathname === "/api/commissions" && req.method === "GET") {
+        const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+        const pageSize = 15;
+        const all = listCommissions(home);
+        const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+        const currentPage = Math.max(1, Math.min(page, totalPages));
+        const start = (currentPage - 1) * pageSize;
+        respondJson(res, {
+          total: all.length,
+          page: currentPage,
+          pageSize,
+          totalPages,
+          items: all.slice(start, start + pageSize),
+        });
+        return;
+      }
+
+      // GET /api/events?page=N — paginated event list for polling
+      if (pathname === "/api/events" && req.method === "GET") {
+        const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+        const pageSize = 25;
+        const all = listEvents(home, { limit: 200 });
+        const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+        const currentPage = Math.max(1, Math.min(page, totalPages));
+        const start = (currentPage - 1) * pageSize;
+        respondJson(res, {
+          total: all.length,
+          page: currentPage,
+          pageSize,
+          totalPages,
+          items: all.slice(start, start + pageSize),
+        });
+        return;
+      }
+
+      // GET /api/dispatches — recent dispatches for polling
+      if (pathname === "/api/dispatches" && req.method === "GET") {
+        const dispatches = listDispatches(home, { limit: 50 });
+        respondJson(res, dispatches);
+        return;
+      }
+
       // --- Hierarchy API routes ---
 
       // GET /api/works?commissionId=<id>

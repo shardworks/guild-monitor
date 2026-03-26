@@ -48,6 +48,7 @@ export function renderDashboard(config: GuildConfig, clockRunning: boolean): str
   <footer>
     <p>Guild Monitor &middot; Refreshed at ${new Date().toLocaleTimeString()}</p>
   </footer>
+  <script>${POLL_JS}</script>
 </body>
 </html>`;
 }
@@ -283,6 +284,48 @@ function esc(str: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+// ---------------------------------------------------------------------------
+// Client-side polling — lightweight, just updates clock badge + timestamp
+// ---------------------------------------------------------------------------
+
+const POLL_JS = `
+(function() {
+  "use strict";
+  var POLL_INTERVAL = 3000;
+
+  function refreshClockStatus() {
+    fetch("/api/clock-status")
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (!data) return;
+        var badges = document.querySelectorAll(".badge-clock-running, .badge-clock-stopped");
+        badges.forEach(function(el) {
+          if (data.running) {
+            el.className = "badge badge-clock-running";
+            el.textContent = "Clock: Running";
+          } else {
+            el.className = "badge badge-clock-stopped";
+            el.textContent = "Clock: Stopped";
+          }
+        });
+      })
+      .catch(function() {});
+  }
+
+  function refreshTimestamp() {
+    var footer = document.querySelector("footer p");
+    if (footer) {
+      footer.innerHTML = "Guild Monitor &middot; Refreshed at " + new Date().toLocaleTimeString();
+    }
+  }
+
+  setInterval(function() {
+    refreshClockStatus();
+    refreshTimestamp();
+  }, POLL_INTERVAL);
+})();
+`;
 
 // ---------------------------------------------------------------------------
 // Styles

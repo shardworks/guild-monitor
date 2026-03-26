@@ -1,4 +1,5 @@
 import type { CommissionSummary, WorkshopEntry } from "@shardworks/nexus-core";
+import { renderTopNav, renderHeader } from "./clockworks.js";
 
 const PAGE_SIZE = 15;
 
@@ -13,6 +14,7 @@ export function renderWorkPage(
   guildName: string,
   nexus: string,
   model: string,
+  clockRunning: boolean,
 ): string {
   const totalPages = Math.max(1, Math.ceil(commissions.length / PAGE_SIZE));
   const currentPage = Math.max(1, Math.min(page, totalPages));
@@ -28,7 +30,7 @@ export function renderWorkPage(
   <style>${CSS}</style>
 </head>
 <body>
-  ${renderHeader(guildName, nexus, model)}
+  ${renderHeader(guildName, nexus, model, clockRunning)}
   ${renderTopNav("work")}
   <main>
     <section id="create-commission">
@@ -42,7 +44,7 @@ export function renderWorkPage(
     </section>
   </main>
   <footer>
-    <p>Guild Monitor v0.1.0 &middot; Refreshed at ${new Date().toLocaleTimeString()}</p>
+    <p>Guild Monitor &middot; Refreshed at ${new Date().toLocaleTimeString()}</p>
   </footer>
   <script>${CLIENT_JS}</script>
 </body>
@@ -52,22 +54,6 @@ export function renderWorkPage(
 // ---------------------------------------------------------------------------
 // Sub-renderers
 // ---------------------------------------------------------------------------
-
-function renderHeader(
-  guildName: string,
-  nexus: string,
-  model: string,
-): string {
-  return `<header>
-    <div class="header-inner">
-      <h1>${esc(guildName)}</h1>
-      <div class="header-meta">
-        <span class="badge">Nexus ${esc(nexus)}</span>
-        <span class="badge badge-alt">Model: ${esc(model)}</span>
-      </div>
-    </div>
-  </header>`;
-}
 
 function renderCommissionList(items: CommissionSummary[]): string {
   if (items.length === 0) {
@@ -159,20 +145,6 @@ function renderCreateForm(workshops: Record<string, WorkshopEntry>): string {
       <button type="submit">Post Commission</button>
     </div>
   </form>`;
-}
-
-// ---------------------------------------------------------------------------
-// Shared layout pieces exported for dashboard.ts
-// ---------------------------------------------------------------------------
-
-/**
- * Render the top-level navigation bar with section links.
- */
-export function renderTopNav(active: "configuration" | "work"): string {
-  return `<nav class="top-nav">
-    <a href="/"${active === "configuration" ? ' class="active"' : ""}>Configuration</a>
-    <a href="/work"${active === "work" ? ' class="active"' : ""}>Work</a>
-  </nav>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +488,8 @@ const CSS = `
   .badge-completed { background: rgba(74,222,128,0.15); color: var(--green); }
   .badge-cancelled { background: rgba(255,255,255,0.06); color: var(--text-muted); }
   .badge-failed { background: rgba(248,113,113,0.15); color: var(--red); }
+  .badge-clock-running { background: rgba(74,222,128,0.15); color: var(--green); }
+  .badge-clock-stopped { background: rgba(255,255,255,0.06); color: var(--text-muted); }
 
   /* Top Nav */
   .top-nav {

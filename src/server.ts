@@ -1,4 +1,6 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import {
   readGuildConfig,
   findGuildRoot,
@@ -7,11 +9,16 @@ import {
   listPieces,
   listJobs,
   listStrokes,
+  listEvents,
+  listDispatches,
+  nexusDir,
+  VERSION,
   commission as postCommission,
 } from "@shardworks/nexus-core";
 import { renderDashboard } from "./dashboard.js";
 import { renderApiJson } from "./api.js";
 import { renderWorkPage } from "./work.js";
+import { renderClockworksPage } from "./clockworks.js";
 
 export interface MonitorOptions {
   /**
@@ -94,6 +101,31 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
 
       // --- Page routes ---
 
+      // Read clock daemon status for the header badge
+      const clockRunning = isClockRunning(home);
+
+      // Clockworks section
+      if (pathname === "/clockworks") {
+        const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+        const events = listEvents(home, { limit: 200 });
+        const dispatches = listDispatches(home, { limit: 50 });
+        const html = renderClockworksPage(
+          clockRunning,
+          events,
+          dispatches,
+          page,
+          config.name,
+          VERSION,
+          config.model,
+        );
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(html);
+        return;
+      }
+
       // Work section (renamed from Commissions)
       if (pathname === "/work") {
         const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
@@ -103,8 +135,9 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
           config.workshops,
           page,
           config.name,
-          config.nexus,
+          VERSION,
           config.model,
+          clockRunning,
         );
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
@@ -122,7 +155,7 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
       }
 
       // Configuration section (default — serves the original dashboard)
-      const html = renderDashboard(config);
+      const html = renderDashboard(config, clockRunning);
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
@@ -143,6 +176,31 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
       resolve();
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Clock daemon status — checks if the clockworks daemon process is alive
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if the clockworks daemon is currently running.
+ *
+ * Reads the PID from .nexus/clock.pid and sends signal 0 to verify the
+ * process is alive. Returns false if the PID file doesn't exist or the
+ * process isn't running.
+ */
+function isClockRunning(home: string): boolean {
+  const pidPath = path.join(nexusDir(home), "clock.pid");
+  try {
+    const pidStr = fs.readFileSync(pidPath, "utf-8").trim();
+    const pid = parseInt(pidStr, 10);
+    if (Number.isNaN(pid)) return false;
+    // signal 0 tests whether the process exists without actually sending a signal
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

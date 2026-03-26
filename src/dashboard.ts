@@ -7,7 +7,8 @@ import type {
   StandingOrder,
   ClockworksConfig,
 } from "@shardworks/nexus-core";
-import { renderTopNav } from "./work.js";
+import { VERSION } from "@shardworks/nexus-core";
+import { renderTopNav, renderHeader } from "./clockworks.js";
 
 /**
  * Render the full dashboard HTML page from the guild config.
@@ -17,7 +18,7 @@ import { renderTopNav } from "./work.js";
  * guild configuration state (workshops, roles, tools, engines, training,
  * clockworks). The top-level nav links to the Commissions section.
  */
-export function renderDashboard(config: GuildConfig): string {
+export function renderDashboard(config: GuildConfig, clockRunning: boolean): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -27,15 +28,7 @@ export function renderDashboard(config: GuildConfig): string {
   <style>${CSS}</style>
 </head>
 <body>
-  <header>
-    <div class="header-inner">
-      <h1>${esc(config.name)}</h1>
-      <div class="header-meta">
-        <span class="badge">Nexus ${esc(config.nexus)}</span>
-        <span class="badge badge-alt">Model: ${esc(config.model)}</span>
-      </div>
-    </div>
-  </header>
+  ${renderHeader(config.name, VERSION, config.model, clockRunning)}
   ${renderTopNav("configuration")}
   <nav>
     <a href="#workshops">Workshops</a>
@@ -54,7 +47,7 @@ export function renderDashboard(config: GuildConfig): string {
     ${renderClockworks(config.clockworks)}
   </main>
   <footer>
-    <p>Guild Monitor v0.1.0 &middot; Refreshed at ${new Date().toLocaleTimeString()}</p>
+    <p>Guild Monitor &middot; Refreshed at ${new Date().toLocaleTimeString()}</p>
   </footer>
 </body>
 </html>`;
@@ -358,6 +351,8 @@ const CSS = `
     background: rgba(255,255,255,0.06);
     color: var(--text-muted);
   }
+  .badge-clock-running { background: rgba(74,222,128,0.15); color: var(--green); }
+  .badge-clock-stopped { background: rgba(255,255,255,0.06); color: var(--text-muted); }
   .badge-verb {
     font-family: var(--mono);
     font-size: 0.7rem;

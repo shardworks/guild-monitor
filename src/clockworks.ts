@@ -87,12 +87,13 @@ export function renderHeader(
  * Render the top-level navigation bar with section links.
  */
 export function renderTopNav(
-  active: "configuration" | "work" | "clockworks",
+  active: "configuration" | "work" | "clockworks" | "consultation",
 ): string {
   return `<nav class="top-nav">
     <a href="/"${active === "configuration" ? ' class="active"' : ""}>Configuration</a>
     <a href="/work"${active === "work" ? ' class="active"' : ""}>Work</a>
     <a href="/clockworks"${active === "clockworks" ? ' class="active"' : ""}>Clockworks</a>
+    <a href="/consultation"${active === "consultation" ? ' class="active"' : ""}>Consultation</a>
   </nav>`;
 }
 

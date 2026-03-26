@@ -18,6 +18,13 @@ import { renderDashboard } from "./dashboard.js";
 import { renderApiJson } from "./api.js";
 import { renderWorkPage } from "./work.js";
 import { renderClockworksPage } from "./clockworks.js";
+import {
+  renderConsultationPage,
+  getConsultableRoles,
+  startConsultation,
+  sendMessage as sendConsultationMessage,
+  cleanupConversation,
+} from "./consultation.js";
 
 export interface MonitorOptions {
   /**
@@ -179,6 +186,66 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
+      // --- Consultation API routes ---
+
+      // GET /api/roles — consultable roles for the dropdown
+      if (pathname === "/api/roles" && req.method === "GET") {
+        const roles = getConsultableRoles(home);
+        respondJson(res, roles);
+        return;
+      }
+
+      // POST /api/consultation/start — begin a new consultation
+      if (pathname === "/api/consultation/start" && req.method === "POST") {
+        handleJsonBody(req, res, async (body) => {
+          const role = typeof body.role === "string" ? body.role : "";
+          const message = typeof body.message === "string" ? body.message : "";
+          if (!role || !message) {
+            respondJsonError(res, 400, "Missing role or message.");
+            return;
+          }
+          try {
+            const result = await startConsultation(home, role, message);
+            respondJson(res, result);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Failed to start consultation";
+            respondJsonError(res, 500, msg);
+          }
+        });
+        return;
+      }
+
+      // POST /api/consultation/message — send a follow-up message
+      if (pathname === "/api/consultation/message" && req.method === "POST") {
+        handleJsonBody(req, res, async (body) => {
+          const conversationId = typeof body.conversationId === "string" ? body.conversationId : "";
+          const message = typeof body.message === "string" ? body.message : "";
+          if (!conversationId || !message) {
+            respondJsonError(res, 400, "Missing conversationId or message.");
+            return;
+          }
+          try {
+            const result = await sendConsultationMessage(conversationId, message);
+            respondJson(res, result);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Failed to send message";
+            respondJsonError(res, 500, msg);
+          }
+        });
+        return;
+      }
+
+      // POST /api/consultation/cleanup — clean up a conversation (best-effort)
+      if (pathname === "/api/consultation/cleanup" && req.method === "POST") {
+        handleJsonBody(req, res, async (body) => {
+          if (typeof body.conversationId === "string") {
+            cleanupConversation(body.conversationId);
+          }
+          respondJson(res, { ok: true });
+        });
+        return;
+      }
+
       // --- Page routes ---
 
       // Read clock daemon status for the header badge
@@ -231,6 +298,24 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
       if (pathname === "/commissions") {
         res.writeHead(301, { Location: "/work" });
         res.end();
+        return;
+      }
+
+      // Consultation section
+      if (pathname === "/consultation") {
+        const roles = getConsultableRoles(home);
+        const html = renderConsultationPage(
+          config.name,
+          config.nexus,
+          config.model,
+          clockRunning,
+          roles,
+        );
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(html);
         return;
       }
 
@@ -331,4 +416,63 @@ function handleCreateCommission(
     res.writeHead(500, { "Content-Type": "text/plain" });
     res.end("Request error");
   });
+}
+
+// ---------------------------------------------------------------------------
+// JSON body handler for consultation API routes
+// ---------------------------------------------------------------------------
+
+/**
+ * Read a JSON body from the request and call the handler with parsed data.
+ * Handles payload size limits, parse errors, and request errors uniformly.
+ */
+function handleJsonBody(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  handler: (body: Record<string, unknown>) => Promise<void>,
+): void {
+  const chunks: Buffer[] = [];
+
+  req.on("data", (chunk: Buffer) => {
+    chunks.push(chunk);
+    const total = chunks.reduce((sum, c) => sum + c.length, 0);
+    if (total > 1_048_576) {
+      req.destroy();
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Payload too large" }));
+    }
+  });
+
+  req.on("end", () => {
+    try {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+      handler(body).catch((err) => {
+        const msg = err instanceof Error ? err.message : "Handler error";
+        if (!res.headersSent) {
+          respondJsonError(res, 500, msg);
+        }
+      });
+    } catch {
+      respondJsonError(res, 400, "Invalid JSON body");
+    }
+  });
+
+  req.on("error", () => {
+    if (!res.headersSent) {
+      respondJsonError(res, 500, "Request error");
+    }
+  });
+}
+
+/** Send an error response as JSON. */
+function respondJsonError(
+  res: http.ServerResponse,
+  status: number,
+  message: string,
+): void {
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+  });
+  res.end(JSON.stringify({ error: message }));
 }

@@ -521,7 +521,7 @@ function renderPagination(current: number, total: number): string {
 
   const links: string[] = [];
   if (current > 1) {
-    links.push(`<a href="${pageUrl(current - 1)}" class="page-link">&laquo; Prev</a>`);
+    links.push(`<a href="${pageUrl(current - 1)}" class="page-link" data-page="${current - 1}">&laquo; Prev</a>`);
   } else {
     links.push(`<span class="page-link disabled">&laquo; Prev</span>`);
   }
@@ -529,11 +529,11 @@ function renderPagination(current: number, total: number): string {
     if (i === current) {
       links.push(`<span class="page-link active">${i}</span>`);
     } else {
-      links.push(`<a href="${pageUrl(i)}" class="page-link">${i}</a>`);
+      links.push(`<a href="${pageUrl(i)}" class="page-link" data-page="${i}">${i}</a>`);
     }
   }
   if (current < total) {
-    links.push(`<a href="${pageUrl(current + 1)}" class="page-link">Next &raquo;</a>`);
+    links.push(`<a href="${pageUrl(current + 1)}" class="page-link" data-page="${current + 1}">Next &raquo;</a>`);
   } else {
     links.push(`<span class="page-link disabled">Next &raquo;</span>`);
   }
@@ -608,6 +608,23 @@ const LIST_JS = `
     var qs = params.toString();
     var newUrl = window.location.pathname + (qs ? "?" + qs : "");
     history.replaceState(null, "", newUrl);
+    updatePaginationLinks();
+  }
+
+  function updatePaginationLinks() {
+    var pagination = document.querySelector(".pagination");
+    if (!pagination) return;
+    pagination.querySelectorAll("a.page-link[data-page]").forEach(function(link) {
+      var page = link.dataset.page;
+      var params = new URLSearchParams(window.location.search);
+      if (page && parseInt(page, 10) > 1) {
+        params.set("page", page);
+      } else {
+        params.delete("page");
+      }
+      var qs = params.toString();
+      link.href = "/sessions" + (qs ? "?" + qs : "");
+    });
   }
 
   function applyFilters() {
@@ -616,10 +633,13 @@ const LIST_JS = `
     var noMatchMsg = document.getElementById("sessions-no-match");
     var tableWrap = table ? table.closest(".table-wrap") : null;
 
+    var paginationEl = document.querySelector(".pagination");
+
     if (activeFilters.size === 0) {
       if (tableWrap) tableWrap.classList.add("hidden");
       if (noFilterMsg) noFilterMsg.classList.remove("hidden");
       if (noMatchMsg) noMatchMsg.classList.add("hidden");
+      if (paginationEl) paginationEl.classList.add("hidden");
       updateFilterButtons();
       updateHeadingCount(0);
       return;
@@ -640,9 +660,11 @@ const LIST_JS = `
     if (visibleCount === 0 && table) {
       if (tableWrap) tableWrap.classList.add("hidden");
       if (noMatchMsg) noMatchMsg.classList.remove("hidden");
+      if (paginationEl) paginationEl.classList.add("hidden");
     } else {
       if (tableWrap) tableWrap.classList.remove("hidden");
       if (noMatchMsg) noMatchMsg.classList.add("hidden");
+      if (paginationEl) paginationEl.classList.remove("hidden");
     }
 
     updateHeadingCount(visibleCount);
@@ -682,7 +704,12 @@ const LIST_JS = `
             ALL_STATUSES.forEach(function(st) { activeFilters.add(st); });
           }
         } else {
-          if (activeFilters.has(s)) {
+          var allOn2 = ALL_STATUSES.every(function(st) { return activeFilters.has(st); });
+          if (allOn2) {
+            // When all filters are active, clicking one selects ONLY that one
+            activeFilters.clear();
+            activeFilters.add(s);
+          } else if (activeFilters.has(s)) {
             activeFilters.delete(s);
           } else {
             activeFilters.add(s);
@@ -724,6 +751,7 @@ const LIST_JS = `
   // --- Initial binding ---
   attachFilterListeners();
   applyFilters();
+  updatePaginationLinks();
 
   setInterval(function() {
     refreshClockStatus();

@@ -426,10 +426,13 @@ const CLIENT_JS = `
     var noMatchMsg = document.getElementById("writs-no-match");
     var tableWrap = table ? table.closest(".table-wrap") : null;
 
+    var paginationEl = document.querySelector(".pagination");
+
     if (activeFilters.size === 0) {
       if (tableWrap) tableWrap.classList.add("hidden");
       if (noFilterMsg) noFilterMsg.classList.remove("hidden");
       if (noMatchMsg) noMatchMsg.classList.add("hidden");
+      if (paginationEl) paginationEl.classList.add("hidden");
       updateFilterButtons();
       return;
     }
@@ -451,9 +454,11 @@ const CLIENT_JS = `
     if (visibleCount === 0 && table) {
       if (tableWrap) tableWrap.classList.add("hidden");
       if (noMatchMsg) noMatchMsg.classList.remove("hidden");
+      if (paginationEl) paginationEl.classList.add("hidden");
     } else {
       if (tableWrap) tableWrap.classList.remove("hidden");
       if (noMatchMsg) noMatchMsg.classList.add("hidden");
+      if (paginationEl) paginationEl.classList.remove("hidden");
     }
 
     // Update heading count
@@ -493,7 +498,12 @@ const CLIENT_JS = `
             ALL_STATUSES.forEach(function(st) { activeFilters.add(st); });
           }
         } else {
-          if (activeFilters.has(s)) {
+          var allOn2 = ALL_STATUSES.every(function(st) { return activeFilters.has(st); });
+          if (allOn2) {
+            // When all filters are active, clicking one selects ONLY that one
+            activeFilters.clear();
+            activeFilters.add(s);
+          } else if (activeFilters.has(s)) {
             activeFilters.delete(s);
           } else {
             activeFilters.add(s);

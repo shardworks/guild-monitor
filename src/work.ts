@@ -278,7 +278,7 @@ function renderPagination(
 
   const links: string[] = [];
   if (current > 1) {
-    links.push(`<a href="${pageUrl(current - 1)}" class="page-link">&laquo; Prev</a>`);
+    links.push(`<a href="${pageUrl(current - 1)}" class="page-link" data-page="${current - 1}">&laquo; Prev</a>`);
   } else {
     links.push(`<span class="page-link disabled">&laquo; Prev</span>`);
   }
@@ -286,11 +286,11 @@ function renderPagination(
     if (i === current) {
       links.push(`<span class="page-link active">${i}</span>`);
     } else {
-      links.push(`<a href="${pageUrl(i)}" class="page-link">${i}</a>`);
+      links.push(`<a href="${pageUrl(i)}" class="page-link" data-page="${i}">${i}</a>`);
     }
   }
   if (current < total) {
-    links.push(`<a href="${pageUrl(current + 1)}" class="page-link">Next &raquo;</a>`);
+    links.push(`<a href="${pageUrl(current + 1)}" class="page-link" data-page="${current + 1}">Next &raquo;</a>`);
   } else {
     links.push(`<span class="page-link disabled">Next &raquo;</span>`);
   }
@@ -417,6 +417,7 @@ const CLIENT_JS = `
     var qs = params.toString();
     var newUrl = window.location.pathname + (qs ? "?" + qs : "");
     history.replaceState(null, "", newUrl);
+    updatePaginationLinks();
   }
 
   function applyFilters() {
@@ -889,12 +890,31 @@ const CLIENT_JS = `
     });
   }
 
+  // --- Pagination links: inherit current URL state (status filters) ---
+
+  function updatePaginationLinks() {
+    var pagination = document.querySelector(".pagination");
+    if (!pagination) return;
+    pagination.querySelectorAll("a.page-link[data-page]").forEach(function(link) {
+      var page = link.dataset.page;
+      var params = new URLSearchParams(window.location.search);
+      if (page && parseInt(page, 10) > 1) {
+        params.set("page", page);
+      } else {
+        params.delete("page");
+      }
+      var qs = params.toString();
+      link.href = "/work" + (qs ? "?" + qs : "");
+    });
+  }
+
   // --- Initial binding ---
   attachSortListeners();
   attachFilterListeners();
   attachWritRowListeners();
   loadChildCounts();
   applyFilters();
+  updatePaginationLinks();
 
   setInterval(function() {
     refreshWrits();

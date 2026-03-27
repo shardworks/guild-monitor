@@ -340,6 +340,7 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
       // Sessions section — list and detail views
       if (pathname === "/sessions") {
         const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+        const statusFilter = url.searchParams.get("status") ?? "all";
         const sessions = listSessions(home, { limit: 200 });
 
         // Build anima ID → name lookup
@@ -352,6 +353,7 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         const html = renderSessionsPage({
           sessions,
           animaNames,
+          statusFilter,
           page,
           guildName: config.name,
           nexus: config.nexus,
@@ -407,11 +409,8 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         const statusFilter = url.searchParams.get("status") ?? "all";
         const focusedWritId = url.searchParams.get("writ") ?? undefined;
 
-        // Build filter options for listWrits
-        const listOpts: { status?: WritStatus } = {};
-        if (statusFilter && statusFilter !== "all") {
-          listOpts.status = statusFilter as WritStatus;
-        }
+        // Always fetch all writs — status filtering is handled client-side
+        // via toggleable filter buttons.
 
         let focusedWrit: WritRecord | null = null;
         let breadcrumb: WritRecord[] = [];
@@ -436,14 +435,14 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
               childCount: childSummaries.length,
               completedCount: childSummaries.filter((c) => c.status === "completed").length,
             };
-            // List child writs (full records for the table)
-            writs = listWrits(home, { parentId: focusedWritId, ...listOpts });
+            // List all child writs (full records for the table)
+            writs = listWrits(home, { parentId: focusedWritId });
           } else {
             writs = [];
           }
         } else {
-          // Top-level view
-          const allWrits = listWrits(home, listOpts);
+          // Top-level view — fetch all, no status filter
+          const allWrits = listWrits(home);
           writs = allWrits.filter((w) => !w.parentId);
         }
 

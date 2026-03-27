@@ -19,7 +19,7 @@ export interface WorkPageData {
   workshops: Record<string, WorkshopEntry>;
   /** Custom writ types declared in guild.json. */
   writTypes: Record<string, WritTypeDeclaration>;
-  /** Currently active status filter (from query param). */
+  /** Currently active status filters (comma-separated from query param, or "all"). */
   statusFilter: string;
   /** Current page number. */
   page: number;
@@ -173,15 +173,18 @@ function renderWritDetail(
 }
 
 function renderStatusFilters(active: string, focusedWritId?: string): string {
-  const baseUrl = focusedWritId ? `/work?writ=${encodeURIComponent(focusedWritId)}` : "/work";
+  // Parse active filters: "all" means all individual statuses are on
+  const individualStatuses = STATUSES.filter((s) => s !== "all");
+  const activeSet = active === "all"
+    ? new Set(individualStatuses)
+    : new Set(active.split(",").filter(Boolean));
+  const allOn = individualStatuses.every((s) => activeSet.has(s));
+
   const buttons = STATUSES.map((s) => {
-    const isActive = s === active;
-    const href = s === "all"
-      ? baseUrl
-      : `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}status=${s}`;
-    return `<a href="${href}" class="filter-btn${isActive ? " filter-active" : ""}">${s === "all" ? "All" : capitalize(s)}</a>`;
+    const isActive = s === "all" ? allOn : activeSet.has(s);
+    return `<button type="button" class="filter-btn${isActive ? " filter-active" : ""}" data-status="${s}">${s === "all" ? "All" : capitalize(s)}</button>`;
   });
-  return `<div class="status-filters">${buttons.join("")}</div>`;
+  return `<div class="status-filters" data-focused-writ="${esc(focusedWritId ?? "")}">${buttons.join("")}</div>`;
 }
 
 /** Status sort weights — lower values sort first in descending (default) order. */
@@ -205,12 +208,14 @@ function sortWritsDefault(items: WritRecord[]): WritRecord[] {
 
 function renderWritTable(items: WritRecord[]): string {
   if (items.length === 0) {
-    return `<p class="empty">No writs found.</p>`;
+    return `<p class="empty" id="writs-empty">No writs found.</p>`;
   }
 
   const sorted = sortWritsDefault(items);
 
-  return `<div class="table-wrap"><table id="writs-table" data-sort-col="status" data-sort-dir="desc">
+  return `<p class="empty hidden" id="writs-no-filter">Enable at least one status filter to see data.</p>
+  <p class="empty hidden" id="writs-no-match">No writs match the selected filters.</p>
+  <div class="table-wrap"><table id="writs-table" data-sort-col="status" data-sort-dir="desc">
     <thead>
       <tr>
         <th></th>
@@ -226,7 +231,7 @@ function renderWritTable(items: WritRecord[]): string {
     </thead>
     <tbody>${sorted.map((w) => {
       const title = truncate(w.title, 80);
-      return `<tr class="writ-row" data-writ-id="${esc(w.id)}"
+      return `<tr class="writ-row" data-writ-id="${esc(w.id)}" data-status="${esc(w.status)}"
           data-sort-id="${esc(w.id)}"
           data-sort-type="${esc(w.type)}"
           data-sort-status="${STATUS_WEIGHT[w.status] ?? -1}"
@@ -258,7 +263,7 @@ function renderWritTable(items: WritRecord[]): string {
 function renderPagination(
   current: number,
   total: number,
-  statusFilter: string,
+  _statusFilter: string,
   focusedWritId?: string,
 ): string {
   if (total <= 1) return "";
@@ -266,7 +271,6 @@ function renderPagination(
   function pageUrl(p: number): string {
     const params = new URLSearchParams();
     if (focusedWritId) params.set("writ", focusedWritId);
-    if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
     if (p > 1) params.set("page", String(p));
     const qs = params.toString();
     return `/work${qs ? "?" + qs : ""}`;
@@ -385,6 +389,118 @@ const CLIENT_JS = `
     return fetch(url).then(function(r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
+    });
+  }
+
+  // --- Toggleable status filters ---
+
+  var ALL_STATUSES = ["ready", "active", "pending", "completed", "failed", "cancelled"];
+
+  function getActiveFilters() {
+    var param = new URLSearchParams(window.location.search).get("status") || "all";
+    if (param === "all") return new Set(ALL_STATUSES);
+    var parts = param.split(",").filter(Boolean);
+    return new Set(parts.length > 0 ? parts : ALL_STATUSES);
+  }
+
+  var activeFilters = getActiveFilters();
+
+  function updateFilterUrl() {
+    var allOn = ALL_STATUSES.every(function(s) { return activeFilters.has(s); });
+    var params = new URLSearchParams(window.location.search);
+    if (allOn || activeFilters.size === 0) {
+      params.delete("status");
+    } else {
+      params.set("status", Array.from(activeFilters).join(","));
+    }
+    params.delete("page");
+    var qs = params.toString();
+    var newUrl = window.location.pathname + (qs ? "?" + qs : "");
+    history.replaceState(null, "", newUrl);
+  }
+
+  function applyFilters() {
+    var table = document.getElementById("writs-table");
+    var noFilterMsg = document.getElementById("writs-no-filter");
+    var noMatchMsg = document.getElementById("writs-no-match");
+    var tableWrap = table ? table.closest(".table-wrap") : null;
+
+    if (activeFilters.size === 0) {
+      if (tableWrap) tableWrap.classList.add("hidden");
+      if (noFilterMsg) noFilterMsg.classList.remove("hidden");
+      if (noMatchMsg) noMatchMsg.classList.add("hidden");
+      updateFilterButtons();
+      return;
+    }
+    if (noFilterMsg) noFilterMsg.classList.add("hidden");
+
+    var visibleCount = 0;
+    if (table) {
+      var rows = table.querySelectorAll(".writ-row");
+      rows.forEach(function(row) {
+        var status = row.dataset.status;
+        var visible = activeFilters.has(status);
+        row.classList.toggle("hidden", !visible);
+        var detailRow = document.getElementById("detail-" + row.dataset.writId);
+        if (detailRow && !visible) detailRow.classList.add("hidden");
+        if (visible) visibleCount++;
+      });
+    }
+
+    if (visibleCount === 0 && table) {
+      if (tableWrap) tableWrap.classList.add("hidden");
+      if (noMatchMsg) noMatchMsg.classList.remove("hidden");
+    } else {
+      if (tableWrap) tableWrap.classList.remove("hidden");
+      if (noMatchMsg) noMatchMsg.classList.add("hidden");
+    }
+
+    // Update heading count
+    var heading = document.querySelector("#writ-list h2");
+    if (heading) {
+      var label = getUrlParam("writ") ? "Children" : "Writs";
+      heading.innerHTML = label + ' <span class="count">(' + visibleCount + ')</span>';
+    }
+
+    updateFilterButtons();
+  }
+
+  function updateFilterButtons() {
+    var allOn = ALL_STATUSES.every(function(s) { return activeFilters.has(s); });
+    document.querySelectorAll(".status-filters .filter-btn").forEach(function(btn) {
+      var s = btn.dataset.status;
+      if (s === "all") {
+        btn.classList.toggle("filter-active", allOn);
+      } else {
+        btn.classList.toggle("filter-active", activeFilters.has(s));
+      }
+    });
+  }
+
+  function attachFilterListeners() {
+    document.querySelectorAll(".status-filters .filter-btn").forEach(function(btn) {
+      if (btn.dataset.filterBound) return;
+      btn.dataset.filterBound = "1";
+      btn.addEventListener("click", function() {
+        var s = btn.dataset.status;
+        if (s === "all") {
+          // If not all are on, turn all on. If all are on, turn all off.
+          var allOn = ALL_STATUSES.every(function(st) { return activeFilters.has(st); });
+          if (allOn) {
+            activeFilters.clear();
+          } else {
+            ALL_STATUSES.forEach(function(st) { activeFilters.add(st); });
+          }
+        } else {
+          if (activeFilters.has(s)) {
+            activeFilters.delete(s);
+          } else {
+            activeFilters.add(s);
+          }
+        }
+        updateFilterUrl();
+        applyFilters();
+      });
     });
   }
 
@@ -597,13 +713,12 @@ const CLIENT_JS = `
 
   function refreshWrits() {
     var writId = getUrlParam("writ");
-    var status = getUrlParam("status");
     var apiUrl;
     if (writId) {
       apiUrl = "/api/writs/" + encodeURIComponent(writId) + "/children";
     } else {
+      // Fetch all writs — client-side filters handle visibility
       apiUrl = "/api/writs?topLevel=1";
-      if (status) apiUrl += "&status=" + encodeURIComponent(status);
     }
 
     fetchJson(apiUrl).then(function(items) {
@@ -641,11 +756,12 @@ const CLIENT_JS = `
         }
       });
 
-      // Update sort data attributes on existing rows (status may have changed)
+      // Update sort + filter data attributes on existing rows (status may have changed)
       Object.keys(existingIds).forEach(function(id) {
         var w = newIds[id];
         if (!w) return;
         var row = existingIds[id];
+        row.dataset.status = w.status;
         row.dataset.sortStatus = String(STATUS_WEIGHT[w.status] != null ? STATUS_WEIGHT[w.status] : -1);
       });
 
@@ -656,6 +772,7 @@ const CLIENT_JS = `
         var tr = document.createElement("tr");
         tr.className = "writ-row";
         tr.dataset.writId = w.id;
+        tr.dataset.status = w.status;
         tr.dataset.sortId = w.id;
         tr.dataset.sortType = w.type || "writ";
         tr.dataset.sortStatus = String(STATUS_WEIGHT[w.status] != null ? STATUS_WEIGHT[w.status] : -1);
@@ -685,13 +802,7 @@ const CLIENT_JS = `
       attachWritRowListeners();
       loadChildCounts();
       sortTable();
-
-      // Update heading count
-      var heading = document.querySelector("#writ-list h2");
-      if (heading) {
-        var label = getUrlParam("writ") ? "Children" : "Writs";
-        heading.innerHTML = label + ' <span class="count">(' + items.length + ')</span>';
-      }
+      applyFilters();
     }).catch(function() {});
   }
 
@@ -780,8 +891,10 @@ const CLIENT_JS = `
 
   // --- Initial binding ---
   attachSortListeners();
+  attachFilterListeners();
   attachWritRowListeners();
   loadChildCounts();
+  applyFilters();
 
   setInterval(function() {
     refreshWrits();
@@ -933,6 +1046,8 @@ const CSS = `
     color: var(--text-muted);
     background: var(--surface);
     border: 1px solid var(--border);
+    cursor: pointer;
+    font-family: var(--sans);
     transition: background 0.15s, color 0.15s;
   }
   .filter-btn:hover { background: var(--accent-dim); color: var(--text); }
@@ -1045,6 +1160,7 @@ const CSS = `
     padding: 0;
     border-bottom: none;
   }
+  .hidden { display: none; }
   .detail-row.hidden { display: none; }
   .detail-panel {
     background: var(--bg);

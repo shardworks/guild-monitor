@@ -21,10 +21,15 @@ const PAGE_SIZE = 20;
 // Session list page
 // ---------------------------------------------------------------------------
 
+/** Session statuses for filter buttons. */
+const SESSION_STATUSES = ["all", "active", "completed", "failed"] as const;
+
 export interface SessionsPageData {
   sessions: SessionSummary[];
   /** Anima ID → name lookup. */
   animaNames: Record<string, string>;
+  /** Currently active status filters (comma-separated or "all"). */
+  statusFilter: string;
   page: number;
   guildName: string;
   nexus: string;
@@ -33,7 +38,7 @@ export interface SessionsPageData {
 }
 
 export function renderSessionsPage(data: SessionsPageData): string {
-  const { sessions, animaNames, page, guildName, nexus, model, clockRunning } = data;
+  const { sessions, animaNames, statusFilter, page, guildName, nexus, model, clockRunning } = data;
 
   const totalPages = Math.max(1, Math.ceil(sessions.length / PAGE_SIZE));
   const currentPage = Math.max(1, Math.min(page, totalPages));
@@ -54,6 +59,7 @@ export function renderSessionsPage(data: SessionsPageData): string {
   <main>
     <section id="session-list">
       <h2>Sessions <span class="count">(${sessions.length})</span></h2>
+      ${renderSessionStatusFilters(statusFilter)}
       ${renderSessionTable(pageItems, animaNames)}
       ${renderPagination(currentPage, totalPages)}
     </section>
@@ -66,15 +72,38 @@ export function renderSessionsPage(data: SessionsPageData): string {
 </html>`;
 }
 
+function renderSessionStatusFilters(active: string): string {
+  const individualStatuses = SESSION_STATUSES.filter((s) => s !== "all");
+  const activeSet = active === "all"
+    ? new Set(individualStatuses)
+    : new Set(active.split(",").filter(Boolean));
+  const allOn = individualStatuses.every((s) => activeSet.has(s));
+
+  const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  const buttons = SESSION_STATUSES.map((s) => {
+    const isActive = s === "all" ? allOn : activeSet.has(s);
+    return `<button type="button" class="filter-btn${isActive ? " filter-active" : ""}" data-status="${s}">${s === "all" ? "All" : capitalize(s)}</button>`;
+  });
+  return `<div class="status-filters">${buttons.join("")}</div>`;
+}
+
+/** Derive a canonical status string for a session row. */
+function sessionStatus(s: SessionSummary): string {
+  if (!s.endedAt) return "active";
+  return s.exitCode === 0 ? "completed" : "failed";
+}
+
 function renderSessionTable(
   sessions: SessionSummary[],
   animaNames: Record<string, string>,
 ): string {
   if (sessions.length === 0) {
-    return `<p class="empty">No sessions found.</p>`;
+    return `<p class="empty" id="sessions-empty">No sessions found.</p>`;
   }
 
-  return `<div class="table-wrap"><table id="sessions-table">
+  return `<p class="empty hidden" id="sessions-no-filter">Enable at least one status filter to see data.</p>
+  <p class="empty hidden" id="sessions-no-match">No sessions match the selected filters.</p>
+  <div class="table-wrap"><table id="sessions-table">
     <thead>
       <tr>
         <th>ID</th>
@@ -90,21 +119,21 @@ function renderSessionTable(
     </thead>
     <tbody>${sessions.map((s) => {
       const animaName = animaNames[s.animaId] ?? s.animaId;
-      const isActive = !s.endedAt;
-      const statusBadge = isActive
+      const status = sessionStatus(s);
+      const statusBadgeHtml = status === "active"
         ? '<span class="badge badge-active">active</span>'
-        : s.exitCode === 0
+        : status === "completed"
           ? '<span class="badge badge-completed">completed</span>'
           : `<span class="badge badge-failed">exit ${s.exitCode ?? "?"}</span>`;
       const cost = s.costUsd != null ? `$${s.costUsd.toFixed(4)}` : "&mdash;";
       const duration = s.durationMs != null ? formatDuration(s.durationMs) : "&mdash;";
 
-      return `<tr class="session-row">
+      return `<tr class="session-row" data-status="${esc(status)}">
         <td class="mono">${esc(s.id)}</td>
         <td>${esc(animaName)}</td>
         <td><span class="badge badge-trigger badge-trigger-${esc(s.trigger)}">${esc(s.trigger)}</span></td>
         <td class="mono">${esc(s.workshop ?? "")}</td>
-        <td>${statusBadge}</td>
+        <td>${statusBadgeHtml}</td>
         <td class="mono">${cost}</td>
         <td class="nowrap">${duration}</td>
         <td class="nowrap">${formatDateTime(s.startedAt)}</td>
@@ -554,6 +583,119 @@ const LIST_JS = `
 (function() {
   "use strict";
 
+  // --- Toggleable status filters ---
+
+  var ALL_STATUSES = ["active", "completed", "failed"];
+
+  function getActiveFilters() {
+    var param = new URLSearchParams(window.location.search).get("status") || "all";
+    if (param === "all") return new Set(ALL_STATUSES);
+    var parts = param.split(",").filter(Boolean);
+    return new Set(parts.length > 0 ? parts : ALL_STATUSES);
+  }
+
+  var activeFilters = getActiveFilters();
+
+  function updateFilterUrl() {
+    var allOn = ALL_STATUSES.every(function(s) { return activeFilters.has(s); });
+    var params = new URLSearchParams(window.location.search);
+    if (allOn || activeFilters.size === 0) {
+      params.delete("status");
+    } else {
+      params.set("status", Array.from(activeFilters).join(","));
+    }
+    params.delete("page");
+    var qs = params.toString();
+    var newUrl = window.location.pathname + (qs ? "?" + qs : "");
+    history.replaceState(null, "", newUrl);
+  }
+
+  function applyFilters() {
+    var table = document.getElementById("sessions-table");
+    var noFilterMsg = document.getElementById("sessions-no-filter");
+    var noMatchMsg = document.getElementById("sessions-no-match");
+    var tableWrap = table ? table.closest(".table-wrap") : null;
+
+    if (activeFilters.size === 0) {
+      if (tableWrap) tableWrap.classList.add("hidden");
+      if (noFilterMsg) noFilterMsg.classList.remove("hidden");
+      if (noMatchMsg) noMatchMsg.classList.add("hidden");
+      updateFilterButtons();
+      updateHeadingCount(0);
+      return;
+    }
+    if (noFilterMsg) noFilterMsg.classList.add("hidden");
+
+    var visibleCount = 0;
+    if (table) {
+      var rows = table.querySelectorAll(".session-row");
+      rows.forEach(function(row) {
+        var status = row.dataset.status;
+        var visible = activeFilters.has(status);
+        row.classList.toggle("hidden", !visible);
+        if (visible) visibleCount++;
+      });
+    }
+
+    if (visibleCount === 0 && table) {
+      if (tableWrap) tableWrap.classList.add("hidden");
+      if (noMatchMsg) noMatchMsg.classList.remove("hidden");
+    } else {
+      if (tableWrap) tableWrap.classList.remove("hidden");
+      if (noMatchMsg) noMatchMsg.classList.add("hidden");
+    }
+
+    updateHeadingCount(visibleCount);
+    updateFilterButtons();
+  }
+
+  function updateHeadingCount(count) {
+    var heading = document.querySelector("#session-list h2");
+    if (heading) {
+      heading.innerHTML = 'Sessions <span class="count">(' + count + ')</span>';
+    }
+  }
+
+  function updateFilterButtons() {
+    var allOn = ALL_STATUSES.every(function(s) { return activeFilters.has(s); });
+    document.querySelectorAll(".status-filters .filter-btn").forEach(function(btn) {
+      var s = btn.dataset.status;
+      if (s === "all") {
+        btn.classList.toggle("filter-active", allOn);
+      } else {
+        btn.classList.toggle("filter-active", activeFilters.has(s));
+      }
+    });
+  }
+
+  function attachFilterListeners() {
+    document.querySelectorAll(".status-filters .filter-btn").forEach(function(btn) {
+      if (btn.dataset.filterBound) return;
+      btn.dataset.filterBound = "1";
+      btn.addEventListener("click", function() {
+        var s = btn.dataset.status;
+        if (s === "all") {
+          var allOn = ALL_STATUSES.every(function(st) { return activeFilters.has(st); });
+          if (allOn) {
+            activeFilters.clear();
+          } else {
+            ALL_STATUSES.forEach(function(st) { activeFilters.add(st); });
+          }
+        } else {
+          if (activeFilters.has(s)) {
+            activeFilters.delete(s);
+          } else {
+            activeFilters.add(s);
+          }
+        }
+        updateFilterUrl();
+        applyFilters();
+      });
+    });
+  }
+
+  // --- Clock status and timestamp ---
+
   function refreshClockStatus() {
     fetch("/api/clock-status")
       .then(function(r) { return r.ok ? r.json() : null; })
@@ -578,6 +720,10 @@ const LIST_JS = `
       footer.innerHTML = "Guild Monitor &middot; Refreshed at " + new Date().toLocaleTimeString();
     }
   }
+
+  // --- Initial binding ---
+  attachFilterListeners();
+  applyFilters();
 
   setInterval(function() {
     refreshClockStatus();
@@ -757,6 +903,38 @@ const CSS = `
     display: flex;
     flex-direction: column;
     gap: 2.5rem;
+  }
+
+  /* Hidden utility */
+  .hidden { display: none; }
+
+  /* Status filters */
+  .status-filters {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .filter-btn {
+    display: inline-block;
+    padding: 0.3em 0.8em;
+    font-size: 0.8rem;
+    font-weight: 500;
+    border-radius: 4px;
+    text-decoration: none;
+    color: var(--text-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-family: var(--sans);
+    transition: background 0.15s, color 0.15s;
+  }
+  .filter-btn:hover { background: var(--accent-dim); color: var(--text); }
+  .filter-active {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    font-weight: 600;
   }
 
   /* Sections */

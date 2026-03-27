@@ -184,27 +184,55 @@ function renderStatusFilters(active: string, focusedWritId?: string): string {
   return `<div class="status-filters">${buttons.join("")}</div>`;
 }
 
+/** Status sort weights — lower values sort first in descending (default) order. */
+const STATUS_WEIGHT: Record<string, number> = {
+  active: 4,
+  failed: 3,
+  ready: 2,
+  completed: 1,
+  cancelled: 0,
+};
+
+function sortWritsDefault(items: WritRecord[]): WritRecord[] {
+  return [...items].sort((a, b) => {
+    const wa = STATUS_WEIGHT[a.status] ?? -1;
+    const wb = STATUS_WEIGHT[b.status] ?? -1;
+    if (wb !== wa) return wb - wa; // descending by status weight
+    // Secondary: created descending
+    return b.createdAt.localeCompare(a.createdAt);
+  });
+}
+
 function renderWritTable(items: WritRecord[]): string {
   if (items.length === 0) {
     return `<p class="empty">No writs found.</p>`;
   }
-  return `<div class="table-wrap"><table>
+
+  const sorted = sortWritsDefault(items);
+
+  return `<div class="table-wrap"><table id="writs-table" data-sort-col="status" data-sort-dir="desc">
     <thead>
       <tr>
         <th></th>
-        <th>ID</th>
-        <th>Type</th>
-        <th>Status</th>
-        <th>Workshop</th>
-        <th>Title</th>
+        <th class="sortable" data-sort-key="id">ID <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort-key="type">Type <span class="sort-arrow"></span></th>
+        <th class="sortable active-sort desc" data-sort-key="status">Status <span class="sort-arrow">&#9660;</span></th>
+        <th class="sortable" data-sort-key="workshop">Workshop <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort-key="title">Title <span class="sort-arrow"></span></th>
         <th>Children</th>
-        <th>Created</th>
+        <th class="sortable" data-sort-key="created">Created <span class="sort-arrow"></span></th>
         <th></th>
       </tr>
     </thead>
-    <tbody>${items.map((w) => {
+    <tbody>${sorted.map((w) => {
       const title = truncate(w.title, 80);
-      return `<tr class="writ-row" data-writ-id="${esc(w.id)}">
+      return `<tr class="writ-row" data-writ-id="${esc(w.id)}"
+          data-sort-id="${esc(w.id)}"
+          data-sort-type="${esc(w.type)}"
+          data-sort-status="${STATUS_WEIGHT[w.status] ?? -1}"
+          data-sort-workshop="${esc(w.workshop ?? "")}"
+          data-sort-title="${esc(truncate(w.title, 80))}"
+          data-sort-created="${esc(w.createdAt)}">
         <td class="expand-cell"><span class="expand-icon" data-writ-id="${esc(w.id)}">&#9654;</span></td>
         <td class="mono">${esc(w.id)}</td>
         <td><span class="badge badge-alt">${esc(w.type)}</span></td>
@@ -613,6 +641,14 @@ const CLIENT_JS = `
         }
       });
 
+      // Update sort data attributes on existing rows (status may have changed)
+      Object.keys(existingIds).forEach(function(id) {
+        var w = newIds[id];
+        if (!w) return;
+        var row = existingIds[id];
+        row.dataset.sortStatus = String(STATUS_WEIGHT[w.status] != null ? STATUS_WEIGHT[w.status] : -1);
+      });
+
       // Add new rows not already in DOM
       items.forEach(function(w) {
         if (existingIds[w.id]) return;
@@ -620,6 +656,12 @@ const CLIENT_JS = `
         var tr = document.createElement("tr");
         tr.className = "writ-row";
         tr.dataset.writId = w.id;
+        tr.dataset.sortId = w.id;
+        tr.dataset.sortType = w.type || "writ";
+        tr.dataset.sortStatus = String(STATUS_WEIGHT[w.status] != null ? STATUS_WEIGHT[w.status] : -1);
+        tr.dataset.sortWorkshop = w.workshop || "";
+        tr.dataset.sortTitle = truncate(w.title, 80);
+        tr.dataset.sortCreated = w.createdAt || "";
         tr.innerHTML =
           '<td class="expand-cell"><span class="expand-icon" data-writ-id="' + esc(w.id) + '">&#9654;</span></td>' +
           '<td class="mono">' + esc(w.id) + '</td>' +
@@ -642,6 +684,7 @@ const CLIENT_JS = `
 
       attachWritRowListeners();
       loadChildCounts();
+      sortTable();
 
       // Update heading count
       var heading = document.querySelector("#writ-list h2");
@@ -652,7 +695,91 @@ const CLIENT_JS = `
     }).catch(function() {});
   }
 
+  // --- Column sorting ---
+
+  var STATUS_WEIGHT = { active: 4, failed: 3, ready: 2, completed: 1, cancelled: 0 };
+  var currentSortCol = "status";
+  var currentSortDir = "desc";
+
+  function compareSortValues(a, b, col, dir) {
+    var aVal = a.dataset["sort" + col.charAt(0).toUpperCase() + col.slice(1)] || "";
+    var bVal = b.dataset["sort" + col.charAt(0).toUpperCase() + col.slice(1)] || "";
+
+    var cmp;
+    if (col === "status" || col === "created") {
+      // Numeric comparison for status weight, string comparison for dates (ISO sorts lexically)
+      var aNum = parseFloat(aVal);
+      var bNum = parseFloat(bVal);
+      if (!isNaN(aNum) && !isNaN(bNum)) {
+        cmp = aNum - bNum;
+      } else {
+        cmp = aVal.localeCompare(bVal);
+      }
+    } else {
+      cmp = aVal.localeCompare(bVal);
+    }
+
+    return dir === "desc" ? -cmp : cmp;
+  }
+
+  function sortTable() {
+    var table = document.getElementById("writs-table");
+    if (!table) return;
+    var tbody = table.querySelector("tbody");
+    if (!tbody) return;
+
+    var writRows = Array.from(tbody.querySelectorAll(".writ-row"));
+    writRows.sort(function(a, b) {
+      var cmp = compareSortValues(a, b, currentSortCol, currentSortDir);
+      // Secondary sort: created descending (when not already sorting by created)
+      if (cmp === 0 && currentSortCol !== "created") {
+        cmp = compareSortValues(a, b, "created", "desc");
+      }
+      return cmp;
+    });
+
+    // Re-append rows in sorted order (each writ-row followed by its detail-row)
+    writRows.forEach(function(row) {
+      var id = row.dataset.writId;
+      var detailRow = document.getElementById("detail-" + id);
+      tbody.appendChild(row);
+      if (detailRow) tbody.appendChild(detailRow);
+    });
+
+    // Update header indicators
+    table.querySelectorAll("thead th.sortable").forEach(function(th) {
+      var arrow = th.querySelector(".sort-arrow");
+      if (th.dataset.sortKey === currentSortCol) {
+        th.classList.add("active-sort");
+        th.classList.toggle("desc", currentSortDir === "desc");
+        th.classList.toggle("asc", currentSortDir === "asc");
+        if (arrow) arrow.innerHTML = currentSortDir === "desc" ? "&#9660;" : "&#9650;";
+      } else {
+        th.classList.remove("active-sort", "asc", "desc");
+        if (arrow) arrow.innerHTML = "";
+      }
+    });
+  }
+
+  function attachSortListeners() {
+    document.querySelectorAll("thead th.sortable").forEach(function(th) {
+      if (th.dataset.sortBound) return;
+      th.dataset.sortBound = "1";
+      th.addEventListener("click", function() {
+        var key = th.dataset.sortKey;
+        if (currentSortCol === key) {
+          currentSortDir = currentSortDir === "desc" ? "asc" : "desc";
+        } else {
+          currentSortCol = key;
+          currentSortDir = "desc";
+        }
+        sortTable();
+      });
+    });
+  }
+
   // --- Initial binding ---
+  attachSortListeners();
   attachWritRowListeners();
   loadChildCounts();
 
@@ -831,6 +958,21 @@ const CSS = `
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
+  thead th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s;
+  }
+  thead th.sortable:hover { color: var(--text); }
+  thead th.sortable.active-sort { color: var(--accent); }
+  .sort-arrow {
+    display: inline-block;
+    width: 0.85em;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    vertical-align: middle;
+  }
+  thead th.active-sort .sort-arrow { color: var(--accent); }
   tbody td {
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid rgba(255,255,255,0.03);

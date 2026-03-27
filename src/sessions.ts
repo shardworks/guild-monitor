@@ -106,14 +106,14 @@ function renderSessionTable(
   <div class="table-wrap"><table id="sessions-table">
     <thead>
       <tr>
-        <th>ID</th>
-        <th>Anima</th>
-        <th>Trigger</th>
-        <th>Workshop</th>
-        <th>Status</th>
-        <th>Cost</th>
-        <th>Duration</th>
-        <th>Started</th>
+        <th class="sortable" data-sort-key="id">ID <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort-key="anima">Anima <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort-key="trigger">Trigger <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort-key="workshop">Workshop <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort-key="status">Status <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort-key="cost">Cost <span class="sort-arrow"></span></th>
+        <th class="sortable" data-sort-key="duration">Duration <span class="sort-arrow"></span></th>
+        <th class="sortable active-sort desc" data-sort-key="started">Started <span class="sort-arrow">&#9660;</span></th>
         <th></th>
       </tr>
     </thead>
@@ -127,8 +127,17 @@ function renderSessionTable(
           : `<span class="badge badge-failed">exit ${s.exitCode ?? "?"}</span>`;
       const cost = s.costUsd != null ? `$${s.costUsd.toFixed(4)}` : "&mdash;";
       const duration = s.durationMs != null ? formatDuration(s.durationMs) : "&mdash;";
+      const STATUS_WEIGHT: Record<string, number> = { active: 2, failed: 1, completed: 0 };
 
-      return `<tr class="session-row" data-status="${esc(status)}">
+      return `<tr class="session-row" data-status="${esc(status)}"
+          data-sort-id="${esc(s.id)}"
+          data-sort-anima="${esc(animaName)}"
+          data-sort-trigger="${esc(s.trigger)}"
+          data-sort-workshop="${esc(s.workshop ?? "")}"
+          data-sort-status="${STATUS_WEIGHT[status] ?? -1}"
+          data-sort-cost="${s.costUsd != null ? s.costUsd : -1}"
+          data-sort-duration="${s.durationMs != null ? s.durationMs : -1}"
+          data-sort-started="${esc(s.startedAt)}">
         <td class="mono">${esc(s.id)}</td>
         <td>${esc(animaName)}</td>
         <td><span class="badge badge-trigger badge-trigger-${esc(s.trigger)}">${esc(s.trigger)}</span></td>
@@ -748,7 +757,80 @@ const LIST_JS = `
     }
   }
 
+  // --- Column sorting ---
+
+  var NUMERIC_COLS = { status: true, cost: true, duration: true };
+  var currentSortCol = "started";
+  var currentSortDir = "desc";
+
+  function compareSortValues(a, b, col, dir) {
+    var aVal = a.dataset["sort" + col.charAt(0).toUpperCase() + col.slice(1)] || "";
+    var bVal = b.dataset["sort" + col.charAt(0).toUpperCase() + col.slice(1)] || "";
+
+    var cmp;
+    if (NUMERIC_COLS[col]) {
+      cmp = (parseFloat(aVal) || 0) - (parseFloat(bVal) || 0);
+    } else {
+      cmp = aVal.localeCompare(bVal);
+    }
+
+    return dir === "desc" ? -cmp : cmp;
+  }
+
+  function sortSessionsTable() {
+    var table = document.getElementById("sessions-table");
+    if (!table) return;
+    var tbody = table.querySelector("tbody");
+    if (!tbody) return;
+
+    var rows = Array.from(tbody.querySelectorAll(".session-row"));
+    rows.sort(function(a, b) {
+      var cmp = compareSortValues(a, b, currentSortCol, currentSortDir);
+      // Secondary sort: started descending (when not already sorting by started)
+      if (cmp === 0 && currentSortCol !== "started") {
+        cmp = compareSortValues(a, b, "started", "desc");
+      }
+      return cmp;
+    });
+
+    rows.forEach(function(row) {
+      tbody.appendChild(row);
+    });
+
+    // Update header indicators
+    table.querySelectorAll("thead th.sortable").forEach(function(th) {
+      var arrow = th.querySelector(".sort-arrow");
+      if (th.dataset.sortKey === currentSortCol) {
+        th.classList.add("active-sort");
+        th.classList.toggle("desc", currentSortDir === "desc");
+        th.classList.toggle("asc", currentSortDir === "asc");
+        if (arrow) arrow.innerHTML = currentSortDir === "desc" ? "&#9660;" : "&#9650;";
+      } else {
+        th.classList.remove("active-sort", "asc", "desc");
+        if (arrow) arrow.innerHTML = "";
+      }
+    });
+  }
+
+  function attachSortListeners() {
+    document.querySelectorAll("thead th.sortable").forEach(function(th) {
+      if (th.dataset.sortBound) return;
+      th.dataset.sortBound = "1";
+      th.addEventListener("click", function() {
+        var key = th.dataset.sortKey;
+        if (currentSortCol === key) {
+          currentSortDir = currentSortDir === "desc" ? "asc" : "desc";
+        } else {
+          currentSortCol = key;
+          currentSortDir = "desc";
+        }
+        sortSessionsTable();
+      });
+    });
+  }
+
   // --- Initial binding ---
+  attachSortListeners();
   attachFilterListeners();
   applyFilters();
   updatePaginationLinks();
@@ -994,6 +1076,21 @@ const CSS = `
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
+  thead th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s;
+  }
+  thead th.sortable:hover { color: var(--text); }
+  thead th.sortable.active-sort { color: var(--accent); }
+  .sort-arrow {
+    display: inline-block;
+    width: 1em;
+    font-size: 0.65em;
+    vertical-align: middle;
+    color: var(--text-muted);
+  }
+  thead th.active-sort .sort-arrow { color: var(--accent); }
   tbody td {
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid rgba(255,255,255,0.03);

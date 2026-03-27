@@ -828,16 +828,11 @@ const CLIENT_JS = `
     var bVal = b.dataset["sort" + col.charAt(0).toUpperCase() + col.slice(1)] || "";
 
     var cmp;
-    if (col === "status" || col === "created") {
-      // Numeric comparison for status weight, string comparison for dates (ISO sorts lexically)
-      var aNum = parseFloat(aVal);
-      var bNum = parseFloat(bVal);
-      if (!isNaN(aNum) && !isNaN(bNum)) {
-        cmp = aNum - bNum;
-      } else {
-        cmp = aVal.localeCompare(bVal);
-      }
+    if (col === "status") {
+      // Numeric comparison for status weight
+      cmp = (parseFloat(aVal) || 0) - (parseFloat(bVal) || 0);
     } else {
+      // Lexical comparison — works for ISO date strings and text alike
       cmp = aVal.localeCompare(bVal);
     }
 

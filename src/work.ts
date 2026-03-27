@@ -1,25 +1,56 @@
-import type { CommissionSummary, WorkshopEntry } from "@shardworks/nexus-core";
+import type { WritRecord, WorkshopEntry, WritTypeDeclaration } from "@shardworks/nexus-core";
 import { renderTopNav, renderHeader } from "./clockworks.js";
 
-const PAGE_SIZE = 15;
+const PAGE_SIZE = 20;
+
+/** Statuses used for filter buttons. */
+const STATUSES = ["all", "ready", "active", "pending", "completed", "failed", "cancelled"] as const;
+
+// ---------------------------------------------------------------------------
+// Public render entry point
+// ---------------------------------------------------------------------------
+
+export interface WorkPageData {
+  /** Top-level writs (or children of the focused writ). */
+  writs: WritRecord[];
+  /** Total writ count (for heading). */
+  totalCount: number;
+  /** Guild workshops keyed by name. */
+  workshops: Record<string, WorkshopEntry>;
+  /** Custom writ types declared in guild.json. */
+  writTypes: Record<string, WritTypeDeclaration>;
+  /** Currently active status filter (from query param). */
+  statusFilter: string;
+  /** Current page number. */
+  page: number;
+  /** If drilling into a specific writ, its record + ancestor breadcrumb. */
+  focusedWrit?: WritRecord | null;
+  /** Breadcrumb trail from root to focused writ (root first). */
+  breadcrumb?: WritRecord[];
+  /** Child summary for focused writ (count / completed). */
+  focusedChildStats?: { childCount: number; completedCount: number };
+  /** Guild name for page chrome. */
+  guildName: string;
+  nexus: string;
+  model: string;
+  clockRunning: boolean;
+}
 
 /**
- * Render the Work section — commission list with drill-down into
- * works, pieces, jobs, and strokes.
+ * Render the Work page — writ posting form, status filters, and writ table
+ * with inline expand + drill-down navigation.
  */
-export function renderWorkPage(
-  commissions: CommissionSummary[],
-  workshops: Record<string, WorkshopEntry>,
-  page: number,
-  guildName: string,
-  nexus: string,
-  model: string,
-  clockRunning: boolean,
-): string {
-  const totalPages = Math.max(1, Math.ceil(commissions.length / PAGE_SIZE));
+export function renderWorkPage(data: WorkPageData): string {
+  const {
+    writs, totalCount, workshops, writTypes, statusFilter,
+    page, focusedWrit, breadcrumb, focusedChildStats,
+    guildName, nexus, model, clockRunning,
+  } = data;
+
+  const totalPages = Math.max(1, Math.ceil(writs.length / PAGE_SIZE));
   const currentPage = Math.max(1, Math.min(page, totalPages));
   const start = (currentPage - 1) * PAGE_SIZE;
-  const pageItems = commissions.slice(start, start + PAGE_SIZE);
+  const pageItems = writs.slice(start, start + PAGE_SIZE);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -33,14 +64,14 @@ export function renderWorkPage(
   ${renderHeader(guildName, nexus, model, clockRunning)}
   ${renderTopNav("work")}
   <main>
-    <section id="create-commission">
-      <h2>New Commission</h2>
-      ${renderCreateForm(workshops)}
-    </section>
-    <section id="commission-list">
-      <h2>Commissions <span class="count">(${commissions.length})</span></h2>
-      ${renderCommissionList(pageItems)}
-      ${renderPagination(currentPage, totalPages)}
+    ${focusedWrit ? renderWritDetail(focusedWrit, breadcrumb ?? [], focusedChildStats) : renderCreateForm(workshops, writTypes)}
+    <section id="writ-list">
+      ${focusedWrit
+        ? `<h2>Children <span class="count">(${totalCount})</span></h2>`
+        : `<h2>Writs <span class="count">(${totalCount})</span></h2>`}
+      ${renderStatusFilters(statusFilter, focusedWrit?.id)}
+      ${renderWritTable(pageItems)}
+      ${renderPagination(currentPage, totalPages, statusFilter, focusedWrit?.id)}
     </section>
   </main>
   <footer>
@@ -55,35 +86,137 @@ export function renderWorkPage(
 // Sub-renderers
 // ---------------------------------------------------------------------------
 
-function renderCommissionList(items: CommissionSummary[]): string {
+function renderCreateForm(
+  workshops: Record<string, WorkshopEntry>,
+  writTypes: Record<string, WritTypeDeclaration>,
+): string {
+  const workshopNames = Object.keys(workshops);
+  const workshopOptions = workshopNames.length > 0
+    ? workshopNames.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("")
+    : "";
+
+  // Build type options: builtin "writ" + any guild-declared types
+  const customTypes = Object.keys(writTypes);
+  const allTypes = ["writ", ...customTypes.filter((t) => t !== "writ")];
+  const typeOptions = allTypes
+    .map((t) => `<option value="${esc(t)}"${t === "writ" ? " selected" : ""}>${esc(t)}</option>`)
+    .join("");
+
+  return `<section id="post-writ">
+    <h2>Post Writ</h2>
+    <form id="writ-form" class="create-form">
+      <div class="form-row-inline">
+        <div class="form-row">
+          <label for="workshop">Workshop</label>
+          <select id="workshop" name="workshop">
+            <option value="">No workshop</option>
+            ${workshopOptions}
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="writ-type">Type</label>
+          <select id="writ-type" name="type">
+            ${typeOptions}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <label for="content">Content <span class="text-muted">(first line = title)</span></label>
+        <textarea id="content" name="content" rows="6" required
+          placeholder="First line becomes the title.&#10;&#10;Remaining lines become the description..."></textarea>
+      </div>
+      <div class="form-actions">
+        <span id="form-message" class="form-message"></span>
+        <button type="submit" id="submit-btn">Post Writ</button>
+      </div>
+    </form>
+  </section>`;
+}
+
+function renderWritDetail(
+  writ: WritRecord,
+  breadcrumb: WritRecord[],
+  childStats?: { childCount: number; completedCount: number },
+): string {
+  const crumbs = breadcrumb.map(
+    (w) => `<a href="/work?writ=${encodeURIComponent(w.id)}" class="breadcrumb-link">${esc(w.title || w.id)}</a>`,
+  );
+  // Add "All Writs" root link
+  crumbs.unshift(`<a href="/work" class="breadcrumb-link">All Writs</a>`);
+  // Current writ as final (non-linked) crumb
+  crumbs.push(`<span class="breadcrumb-current">${esc(writ.title || writ.id)}</span>`);
+
+  const progressHtml = childStats && childStats.childCount > 0
+    ? `<span class="text-muted">${childStats.completedCount} / ${childStats.childCount} children done</span>`
+    : "";
+
+  return `<section id="writ-detail">
+    <div class="breadcrumb">${crumbs.join('<span class="breadcrumb-sep">/</span>')}</div>
+    <div class="detail-card">
+      <div class="detail-card-header">
+        <span class="mono">${esc(writ.id)}</span>
+        <span class="badge badge-alt">${esc(writ.type)}</span>
+        ${statusBadge(writ.status)}
+        ${writ.workshop ? `<span class="text-muted">workshop: ${esc(writ.workshop)}</span>` : ""}
+        ${progressHtml}
+      </div>
+      <h2 class="detail-title">${esc(writ.title)}</h2>
+      ${writ.description ? `<pre class="detail-description">${esc(writ.description)}</pre>` : ""}
+      <div class="detail-meta">
+        <span>Source: ${esc(writ.sourceType ?? "unknown")}</span>
+        ${writ.sessionId ? `<span>Session: <span class="mono">${esc(writ.sessionId)}</span></span>` : ""}
+        <span>Created: ${formatDate(writ.createdAt)}</span>
+        <span>Updated: ${formatDate(writ.updatedAt)}</span>
+      </div>
+    </div>
+  </section>`;
+}
+
+function renderStatusFilters(active: string, focusedWritId?: string): string {
+  const baseUrl = focusedWritId ? `/work?writ=${encodeURIComponent(focusedWritId)}` : "/work";
+  const buttons = STATUSES.map((s) => {
+    const isActive = s === active;
+    const href = s === "all"
+      ? baseUrl
+      : `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}status=${s}`;
+    return `<a href="${href}" class="filter-btn${isActive ? " filter-active" : ""}">${s === "all" ? "All" : capitalize(s)}</a>`;
+  });
+  return `<div class="status-filters">${buttons.join("")}</div>`;
+}
+
+function renderWritTable(items: WritRecord[]): string {
   if (items.length === 0) {
-    return `<p class="empty">No commissions found.</p>`;
+    return `<p class="empty">No writs found.</p>`;
   }
   return `<div class="table-wrap"><table>
     <thead>
       <tr>
         <th></th>
         <th>ID</th>
+        <th>Type</th>
         <th>Status</th>
         <th>Workshop</th>
-        <th>Spec</th>
+        <th>Title</th>
+        <th>Children</th>
         <th>Created</th>
-        <th>Updated</th>
+        <th></th>
       </tr>
     </thead>
-    <tbody>${items.map((c) => {
-      const preview = truncate(c.content, 120);
-      return `<tr class="commission-row" data-commission-id="${esc(c.id)}">
-        <td class="expand-cell"><span class="expand-icon">&#9654;</span></td>
-        <td class="mono">${esc(c.id)}</td>
-        <td>${statusBadge(c.status)}</td>
-        <td class="mono">${esc(c.workshop)}</td>
-        <td class="spec-preview">${esc(preview)}</td>
-        <td class="nowrap">${formatDate(c.createdAt)}</td>
-        <td class="nowrap">${formatDate(c.updatedAt)}</td>
+    <tbody>${items.map((w) => {
+      const title = truncate(w.title, 80);
+      return `<tr class="writ-row" data-writ-id="${esc(w.id)}">
+        <td class="expand-cell"><span class="expand-icon" data-writ-id="${esc(w.id)}">&#9654;</span></td>
+        <td class="mono">${esc(w.id)}</td>
+        <td><span class="badge badge-alt">${esc(w.type)}</span></td>
+        <td>${statusBadge(w.status)}</td>
+        <td class="mono">${esc(w.workshop ?? "")}</td>
+        <td class="title-cell">${esc(title)}</td>
+        <td class="children-cell" data-writ-id="${esc(w.id)}"></td>
+        <td class="nowrap">${formatDate(w.createdAt)}</td>
+        <td class="drill-cell"><a href="/work?writ=${encodeURIComponent(w.id)}" class="drill-link" title="Open writ">&rarr;</a></td>
       </tr>
-      <tr class="detail-row hidden" id="detail-${esc(c.id)}">
-        <td colspan="7">
+      <tr class="detail-row hidden" id="detail-${esc(w.id)}">
+        <td colspan="9">
           <div class="detail-panel">
             <div class="detail-loading">Loading&hellip;</div>
           </div>
@@ -94,84 +227,65 @@ function renderCommissionList(items: CommissionSummary[]): string {
   </table></div>`;
 }
 
-function renderPagination(current: number, total: number): string {
+function renderPagination(
+  current: number,
+  total: number,
+  statusFilter: string,
+  focusedWritId?: string,
+): string {
   if (total <= 1) return "";
 
-  const links: string[] = [];
+  function pageUrl(p: number): string {
+    const params = new URLSearchParams();
+    if (focusedWritId) params.set("writ", focusedWritId);
+    if (statusFilter && statusFilter !== "all") params.set("status", statusFilter);
+    if (p > 1) params.set("page", String(p));
+    const qs = params.toString();
+    return `/work${qs ? "?" + qs : ""}`;
+  }
 
+  const links: string[] = [];
   if (current > 1) {
-    links.push(`<a href="/work?page=${current - 1}" class="page-link">&laquo; Prev</a>`);
+    links.push(`<a href="${pageUrl(current - 1)}" class="page-link">&laquo; Prev</a>`);
   } else {
     links.push(`<span class="page-link disabled">&laquo; Prev</span>`);
   }
-
   for (let i = 1; i <= total; i++) {
     if (i === current) {
       links.push(`<span class="page-link active">${i}</span>`);
     } else {
-      links.push(`<a href="/work?page=${i}" class="page-link">${i}</a>`);
+      links.push(`<a href="${pageUrl(i)}" class="page-link">${i}</a>`);
     }
   }
-
   if (current < total) {
-    links.push(`<a href="/work?page=${current + 1}" class="page-link">Next &raquo;</a>`);
+    links.push(`<a href="${pageUrl(current + 1)}" class="page-link">Next &raquo;</a>`);
   } else {
     links.push(`<span class="page-link disabled">Next &raquo;</span>`);
   }
-
   return `<div class="pagination">${links.join("")}</div>`;
-}
-
-function renderCreateForm(workshops: Record<string, WorkshopEntry>): string {
-  const workshopNames = Object.keys(workshops);
-  const options = workshopNames.length > 0
-    ? workshopNames.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("")
-    : `<option value="" disabled>No workshops available</option>`;
-
-  return `<form method="POST" action="/api/commissions" class="create-form">
-    <div class="form-row">
-      <label for="workshop">Workshop</label>
-      <select id="workshop" name="workshop" required>
-        <option value="">Select a workshop&hellip;</option>
-        ${options}
-      </select>
-    </div>
-    <div class="form-row">
-      <label for="spec">Specification</label>
-      <textarea id="spec" name="spec" rows="8" required
-        placeholder="Describe what needs to be done&hellip;"></textarea>
-    </div>
-    <div class="form-actions">
-      <button type="submit">Post Commission</button>
-    </div>
-  </form>`;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+const STATUS_CLASSES: Record<string, string> = {
+  ready: "badge-posted",
+  active: "badge-active",
+  pending: "badge-pending",
+  completed: "badge-completed",
+  failed: "badge-failed",
+  cancelled: "badge-cancelled",
+};
+
 function statusBadge(status: string): string {
   const cls = STATUS_CLASSES[status] ?? "badge-alt";
   return `<span class="badge ${cls}">${esc(status)}</span>`;
 }
 
-const STATUS_CLASSES: Record<string, string> = {
-  posted: "badge-posted",
-  active: "badge-active",
-  in_progress: "badge-active",
-  open: "badge-posted",
-  completed: "badge-completed",
-  cancelled: "badge-cancelled",
-  failed: "badge-failed",
-  pending: "badge-posted",
-  complete: "badge-completed",
-};
-
 function truncate(text: string, maxLen: number): string {
   const firstLine = text.split("\n")[0] ?? "";
-  const base = firstLine.length > maxLen ? firstLine.slice(0, maxLen) : firstLine;
-  return base.length < firstLine.length ? base + "\u2026" : base;
+  return firstLine.length > maxLen ? firstLine.slice(0, maxLen) + "\u2026" : firstLine;
 }
 
 function formatDate(iso: string): string {
@@ -180,10 +294,16 @@ function formatDate(iso: string): string {
       year: "numeric",
       month: "short",
       day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
     });
   } catch {
     return esc(iso);
   }
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** Escape HTML special characters. */
@@ -196,7 +316,7 @@ function esc(str: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Client-side JavaScript — progressive drill-down into commission hierarchy
+// Client-side JavaScript
 // ---------------------------------------------------------------------------
 
 const CLIENT_JS = `
@@ -213,24 +333,25 @@ const CLIENT_JS = `
 
   function badge(status) {
     var cls = {
-      posted: "badge-posted", active: "badge-active", in_progress: "badge-active",
-      open: "badge-posted", completed: "badge-completed", cancelled: "badge-cancelled",
-      failed: "badge-failed", pending: "badge-posted", complete: "badge-completed"
+      ready: "badge-posted", active: "badge-active", pending: "badge-pending",
+      completed: "badge-completed", failed: "badge-failed", cancelled: "badge-cancelled"
     }[status] || "badge-alt";
     return '<span class="badge ' + cls + '">' + esc(status) + '</span>';
   }
 
   function fmtDate(iso) {
-    try { return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }); }
-    catch(e) { return esc(iso); }
+    try {
+      return new Date(iso).toLocaleDateString("en-US", {
+        year: "numeric", month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit"
+      });
+    } catch(e) { return esc(iso); }
   }
 
   function truncate(text, max) {
     var line = (text || "").split("\\n")[0] || "";
     return line.length > max ? line.slice(0, max) + "\\u2026" : line;
   }
-
-  // --- Data fetching ---
 
   function fetchJson(url) {
     return fetch(url).then(function(r) {
@@ -239,141 +360,194 @@ const CLIENT_JS = `
     });
   }
 
-  // --- Render hierarchy sections (writ-based) ---
+  // --- Post writ form (JSON submit) ---
 
-  function renderWritChildren(children) {
-    if (children.length === 0) return '<p class="empty">No child writs.</p>';
-    var html = '<div class="hierarchy-section">';
-    html += '<div class="hierarchy-list">';
-    children.forEach(function(w) {
-      var hasChildren = w.childCount > 0;
-      html += '<div class="hierarchy-item" data-type="writ" data-id="' + esc(w.id) + '">';
-      html += '<div class="hierarchy-header">';
-      if (hasChildren) {
-        html += '<span class="expand-icon">&#9654;</span> ';
-      } else {
-        html += '<span class="expand-icon" style="visibility:hidden">&#9654;</span> ';
-      }
-      html += '<span class="mono">' + esc(w.id) + '</span> ';
-      html += '<span class="badge badge-alt">' + esc(w.type) + '</span> ';
-      html += badge(w.status) + ' ';
-      html += '<strong>' + esc(w.title) + '</strong>';
-      if (hasChildren) {
-        html += ' <span class="text-muted">(' + w.completedCount + '/' + w.childCount + ' done)</span>';
-      }
-      html += '</div>';
-      if (hasChildren) {
-        html += '<div class="hierarchy-children hidden"></div>';
-      }
-      html += '</div>';
+  var form = document.getElementById("writ-form");
+  if (form) {
+    form.addEventListener("submit", function(e) {
+      e.preventDefault();
+      var btn = document.getElementById("submit-btn");
+      var msg = document.getElementById("form-message");
+      var workshop = document.getElementById("workshop").value;
+      var type = document.getElementById("writ-type").value;
+      var content = document.getElementById("content").value.trim();
+      if (!content) return;
+
+      btn.disabled = true;
+      btn.textContent = "Posting...";
+      msg.textContent = "";
+      msg.className = "form-message";
+
+      fetch("/api/writs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workshop: workshop || null, type: type, content: content })
+      })
+      .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || "HTTP " + r.status); });
+        return r.json();
+      })
+      .then(function(data) {
+        document.getElementById("content").value = "";
+        msg.textContent = "Writ posted: " + data.id;
+        msg.className = "form-message form-message-ok";
+        refreshWrits();
+      })
+      .catch(function(err) {
+        msg.textContent = "Error: " + err.message;
+        msg.className = "form-message form-message-err";
+      })
+      .finally(function() {
+        btn.disabled = false;
+        btn.textContent = "Post Writ";
+      });
     });
-    html += '</div></div>';
+  }
+
+  // --- Inline child expand (up to 2 levels) ---
+
+  function renderChildTable(children, depth) {
+    if (!children || children.length === 0) return '<p class="empty">No children.</p>';
+    var canExpand = depth < 2;
+    var html = '<table class="nested-table"><thead><tr>';
+    if (canExpand) html += '<th></th>';
+    html += '<th>ID</th><th>Type</th><th>Status</th><th>Title</th><th>Children</th><th></th>';
+    html += '</tr></thead><tbody>';
+    children.forEach(function(c) {
+      var hasKids = c.childCount > 0;
+      html += '<tr class="writ-child-row" data-writ-id="' + esc(c.id) + '" data-depth="' + depth + '">';
+      if (canExpand) {
+        html += '<td class="expand-cell">';
+        if (hasKids) {
+          html += '<span class="expand-icon child-expand" data-writ-id="' + esc(c.id) + '">&#9654;</span>';
+        }
+        html += '</td>';
+      }
+      html += '<td class="mono">' + esc(c.id) + '</td>';
+      html += '<td>' + badge(c.type || "writ") + '</td>';
+      html += '<td>' + badge(c.status) + '</td>';
+      html += '<td class="title-cell">' + esc(truncate(c.title, 60)) + '</td>';
+      html += '<td>';
+      if (hasKids) {
+        html += '<span class="progress-indicator">' + c.completedCount + ' / ' + c.childCount + ' done</span>';
+      }
+      html += '</td>';
+      html += '<td><a href="/work?writ=' + encodeURIComponent(c.id) + '" class="drill-link" title="Open">&rarr;</a></td>';
+      html += '</tr>';
+      if (canExpand && hasKids) {
+        html += '<tr class="inline-children hidden" id="inline-' + esc(c.id) + '"><td colspan="7"><div class="inline-panel"></div></td></tr>';
+      }
+    });
+    html += '</tbody></table>';
     return html;
   }
 
-  // --- Expand/collapse logic ---
-
-  function attachCommissionListeners() {
-    document.querySelectorAll(".commission-row").forEach(function(row) {
-      if (row.dataset.bound) return;
-      row.dataset.bound = "1";
-
-      row.addEventListener("click", function() {
-        var id = row.dataset.commissionId;
-        var detailRow = document.getElementById("detail-" + id);
-        if (!detailRow) return;
-
-        var isHidden = detailRow.classList.contains("hidden");
-        var icon = row.querySelector(".expand-icon");
-
+  function attachExpandListeners(container, depth) {
+    container.querySelectorAll(".child-expand").forEach(function(icon) {
+      if (icon.dataset.bound) return;
+      icon.dataset.bound = "1";
+      icon.addEventListener("click", function(e) {
+        e.stopPropagation();
+        var id = icon.dataset.writId;
+        var inlineRow = document.getElementById("inline-" + id);
+        if (!inlineRow) return;
+        var isHidden = inlineRow.classList.contains("hidden");
         if (isHidden) {
-          detailRow.classList.remove("hidden");
-          row.classList.add("selected");
-          if (icon) icon.innerHTML = "&#9660;";
-
-          // Load child writs if not yet loaded
-          var panel = detailRow.querySelector(".detail-panel");
-          if (panel && panel.querySelector(".detail-loading")) {
-            fetchJson("/api/commissions/" + encodeURIComponent(id) + "/children")
+          inlineRow.classList.remove("hidden");
+          icon.innerHTML = "&#9660;";
+          var panel = inlineRow.querySelector(".inline-panel");
+          if (panel && !panel.dataset.loaded) {
+            panel.innerHTML = '<span class="text-muted">Loading...</span>';
+            fetchJson("/api/writs/" + encodeURIComponent(id) + "/children")
               .then(function(children) {
-                panel.innerHTML = renderWritChildren(children);
-                attachHierarchyListeners(panel);
+                panel.dataset.loaded = "1";
+                panel.innerHTML = renderChildTable(children, depth + 1);
+                attachExpandListeners(panel, depth + 1);
               })
               .catch(function(err) {
-                panel.innerHTML = '<p class="empty">Failed to load children: ' + esc(err.message) + '</p>';
+                panel.innerHTML = '<p class="empty">Failed: ' + esc(err.message) + '</p>';
+              });
+          }
+        } else {
+          inlineRow.classList.add("hidden");
+          icon.innerHTML = "&#9654;";
+        }
+      });
+    });
+  }
+
+  // --- Top-level row expand ---
+
+  function attachWritRowListeners() {
+    document.querySelectorAll(".writ-row").forEach(function(row) {
+      var icon = row.querySelector(".expand-icon");
+      if (!icon || icon.dataset.bound) return;
+      icon.dataset.bound = "1";
+      icon.style.cursor = "pointer";
+
+      icon.addEventListener("click", function(e) {
+        e.stopPropagation();
+        var id = icon.dataset.writId;
+        var detailRow = document.getElementById("detail-" + id);
+        if (!detailRow) return;
+        var isHidden = detailRow.classList.contains("hidden");
+        if (isHidden) {
+          detailRow.classList.remove("hidden");
+          icon.innerHTML = "&#9660;";
+          var panel = detailRow.querySelector(".detail-panel");
+          if (panel && panel.querySelector(".detail-loading")) {
+            fetchJson("/api/writs/" + encodeURIComponent(id) + "/children")
+              .then(function(children) {
+                panel.innerHTML = renderChildTable(children, 1);
+                attachExpandListeners(panel, 1);
+              })
+              .catch(function(err) {
+                panel.innerHTML = '<p class="empty">Failed: ' + esc(err.message) + '</p>';
               });
           }
         } else {
           detailRow.classList.add("hidden");
-          row.classList.remove("selected");
-          if (icon) icon.innerHTML = "&#9654;";
+          icon.innerHTML = "&#9654;";
         }
       });
     });
   }
 
-  // Hierarchy item toggle — generic writ children drill-down
-  function attachHierarchyListeners(container) {
-    container.querySelectorAll(".hierarchy-item").forEach(function(item) {
-      // Only attach to direct header, not nested items
-      var header = item.querySelector(".hierarchy-header");
-      if (!header || header.dataset.bound) return;
-      header.dataset.bound = "1";
+  // --- Load child counts + progress into the Children column cells ---
 
-      header.addEventListener("click", function(e) {
-        e.stopPropagation();
-        var id = item.dataset.id;
-        var children = item.querySelector(".hierarchy-children");
-        var icon = header.querySelector(".expand-icon");
-        if (!children) return;
-
-        var isHidden = children.classList.contains("hidden");
-
-        if (isHidden) {
-          children.classList.remove("hidden");
-          if (icon) icon.innerHTML = "&#9660;";
-
-          // Fetch children if empty
-          if (children.innerHTML.trim() === "") {
-            children.innerHTML = '<span class="text-muted">Loading&hellip;</span>';
-            fetchJson("/api/writs/" + encodeURIComponent(id) + "/children")
-              .then(function(data) {
-                children.innerHTML = renderWritChildren(data);
-                attachHierarchyListeners(children);
-              })
-              .catch(function(err) {
-                children.innerHTML = '<p class="empty">Failed to load: ' + esc(err.message) + '</p>';
-              });
+  function loadChildCounts() {
+    document.querySelectorAll(".children-cell").forEach(function(cell) {
+      if (cell.dataset.loaded) return;
+      cell.dataset.loaded = "1";
+      var id = cell.dataset.writId;
+      fetchJson("/api/writs/" + encodeURIComponent(id) + "/children")
+        .then(function(children) {
+          if (children.length === 0) {
+            cell.innerHTML = "";
+            // Hide expand icon for leaf writs
+            var icon = document.querySelector('.expand-icon[data-writ-id="' + id + '"]');
+            if (icon) icon.style.visibility = "hidden";
+          } else {
+            var done = children.filter(function(c) { return c.status === "completed"; }).length;
+            cell.innerHTML = '<span class="progress-indicator">' + done + ' / ' + children.length + ' done</span>';
           }
-        } else {
-          children.classList.add("hidden");
-          if (icon) icon.innerHTML = "&#9654;";
-        }
-      });
+        })
+        .catch(function() { /* silent */ });
     });
   }
 
-  // --- Initial binding ---
-  attachCommissionListeners();
+  // --- Auto-refresh polling ---
 
-  // =========================================================================
-  // Auto-refresh — poll for changes and patch the DOM without flickering
-  // =========================================================================
+  var POLL_INTERVAL = 3000;
 
-  var POLL_INTERVAL = 3000; // 3 seconds
-
-  // Track the current page from the URL
-  function currentPage() {
-    var params = new URLSearchParams(window.location.search);
-    return Math.max(1, parseInt(params.get("page") || "1", 10) || 1);
+  function getUrlParam(name) {
+    return new URLSearchParams(window.location.search).get(name) || "";
   }
 
-  // Update the clock status badge in the header without a full redraw
   function refreshClockStatus() {
     fetchJson("/api/clock-status")
       .then(function(data) {
-        var badges = document.querySelectorAll(".badge-clock-running, .badge-clock-stopped");
-        badges.forEach(function(el) {
+        document.querySelectorAll(".badge-clock-running, .badge-clock-stopped").forEach(function(el) {
           if (data.running) {
             el.className = "badge badge-clock-running";
             el.textContent = "Clock: Running";
@@ -383,10 +557,9 @@ const CLIENT_JS = `
           }
         });
       })
-      .catch(function() { /* silent — next poll will retry */ });
+      .catch(function() {});
   }
 
-  // Update the footer timestamp
   function refreshTimestamp() {
     var footer = document.querySelector("footer p");
     if (footer) {
@@ -394,100 +567,97 @@ const CLIENT_JS = `
     }
   }
 
-  // Patch the commission table in place — update existing rows, add new ones,
-  // remove stale ones, all while preserving expand/collapse state.
-  function refreshCommissions() {
-    var page = currentPage();
-    fetchJson("/api/commissions?page=" + page)
-      .then(function(data) {
-        var items = data.items || [];
-        var total = data.total || 0;
+  function refreshWrits() {
+    var writId = getUrlParam("writ");
+    var status = getUrlParam("status");
+    var apiUrl;
+    if (writId) {
+      apiUrl = "/api/writs/" + encodeURIComponent(writId) + "/children";
+    } else {
+      apiUrl = "/api/writs?topLevel=1";
+      if (status) apiUrl += "&status=" + encodeURIComponent(status);
+    }
 
-        // Update the section heading count
-        var heading = document.querySelector("#commission-list h2");
-        if (heading) {
-          heading.innerHTML = 'Commissions <span class="count">(' + total + ')</span>';
+    fetchJson(apiUrl).then(function(items) {
+      var tbody = document.querySelector("#writ-list tbody");
+      if (!tbody) return;
+
+      // Build lookup of new items
+      var newIds = {};
+      items.forEach(function(w) { newIds[w.id] = w; });
+
+      // Update existing rows in place
+      var existingRows = tbody.querySelectorAll(".writ-row");
+      var existingIds = {};
+      existingRows.forEach(function(row) { existingIds[row.dataset.writId] = row; });
+
+      // Remove stale rows
+      Object.keys(existingIds).forEach(function(id) {
+        if (!newIds[id]) {
+          var detail = document.getElementById("detail-" + id);
+          if (detail) detail.remove();
+          existingIds[id].remove();
         }
+      });
 
-        var tbody = document.querySelector("#commission-list tbody");
-        if (!tbody) return;
+      // Patch existing rows — update status badge
+      Object.keys(existingIds).forEach(function(id) {
+        var w = newIds[id];
+        if (!w) return;
+        var row = existingIds[id];
+        var cells = row.querySelectorAll("td");
+        // Status is cell index 3
+        if (cells.length >= 8) {
+          var newBadge = badge(w.status);
+          if (cells[3].innerHTML !== newBadge) cells[3].innerHTML = newBadge;
+        }
+      });
 
-        // Build a set of IDs we received
-        var newIds = {};
-        items.forEach(function(c) { newIds[c.id] = c; });
+      // Add new rows not already in DOM
+      items.forEach(function(w) {
+        if (existingIds[w.id]) return;
+        var frag = document.createDocumentFragment();
+        var tr = document.createElement("tr");
+        tr.className = "writ-row";
+        tr.dataset.writId = w.id;
+        tr.innerHTML =
+          '<td class="expand-cell"><span class="expand-icon" data-writ-id="' + esc(w.id) + '">&#9654;</span></td>' +
+          '<td class="mono">' + esc(w.id) + '</td>' +
+          '<td><span class="badge badge-alt">' + esc(w.type) + '</span></td>' +
+          '<td>' + badge(w.status) + '</td>' +
+          '<td class="mono">' + esc(w.workshop || "") + '</td>' +
+          '<td class="title-cell">' + esc(truncate(w.title, 80)) + '</td>' +
+          '<td class="children-cell" data-writ-id="' + esc(w.id) + '"></td>' +
+          '<td class="nowrap">' + fmtDate(w.createdAt) + '</td>' +
+          '<td class="drill-cell"><a href="/work?writ=' + encodeURIComponent(w.id) + '" class="drill-link" title="Open">&rarr;</a></td>';
+        frag.appendChild(tr);
 
-        // Track which IDs are already in the DOM
-        var existingRows = tbody.querySelectorAll(".commission-row");
-        var existingIds = {};
-        existingRows.forEach(function(row) {
-          existingIds[row.dataset.commissionId] = row;
-        });
+        var detailTr = document.createElement("tr");
+        detailTr.className = "detail-row hidden";
+        detailTr.id = "detail-" + w.id;
+        detailTr.innerHTML = '<td colspan="9"><div class="detail-panel"><div class="detail-loading">Loading&hellip;</div></div></td>';
+        frag.appendChild(detailTr);
+        tbody.appendChild(frag);
+      });
 
-        // Update existing rows in place (status, dates, spec) — skip if expanded
-        Object.keys(existingIds).forEach(function(id) {
-          var c = newIds[id];
-          var row = existingIds[id];
-          if (!c) {
-            // Commission no longer on this page — remove both rows
-            var detail = document.getElementById("detail-" + id);
-            if (detail) detail.remove();
-            row.remove();
-            return;
-          }
-          // Patch cells: [expand, id, status, workshop, spec, created, updated]
-          var cells = row.querySelectorAll("td");
-          if (cells.length >= 7) {
-            // Status badge (cell 2)
-            var newBadge = badge(c.status);
-            if (cells[2].innerHTML !== newBadge) cells[2].innerHTML = newBadge;
-            // Spec preview (cell 4)
-            var newSpec = esc(truncate(c.content, 120));
-            if (cells[4].textContent !== truncate(c.content, 120)) cells[4].innerHTML = newSpec;
-            // Updated date (cell 6)
-            var newDate = fmtDate(c.updatedAt);
-            if (cells[6].textContent !== newDate) cells[6].textContent = newDate;
-          }
-        });
+      attachWritRowListeners();
+      loadChildCounts();
 
-        // Add new commissions that weren't in the DOM
-        items.forEach(function(c) {
-          if (existingIds[c.id]) return;
-          // Build the two rows (commission + detail) and append to tbody
-          var frag = document.createDocumentFragment();
-          var tr = document.createElement("tr");
-          tr.className = "commission-row";
-          tr.dataset.commissionId = c.id;
-          tr.innerHTML =
-            '<td class="expand-cell"><span class="expand-icon">&#9654;</span></td>' +
-            '<td class="mono">' + esc(c.id) + '</td>' +
-            '<td>' + badge(c.status) + '</td>' +
-            '<td class="mono">' + esc(c.workshop) + '</td>' +
-            '<td class="spec-preview">' + esc(truncate(c.content, 120)) + '</td>' +
-            '<td class="nowrap">' + fmtDate(c.createdAt) + '</td>' +
-            '<td class="nowrap">' + fmtDate(c.updatedAt) + '</td>';
-          frag.appendChild(tr);
-
-          var detailTr = document.createElement("tr");
-          detailTr.className = "detail-row hidden";
-          detailTr.id = "detail-" + c.id;
-          detailTr.innerHTML =
-            '<td colspan="7"><div class="detail-panel">' +
-            '<div class="detail-loading">Loading&hellip;</div>' +
-            '</div></td>';
-          frag.appendChild(detailTr);
-
-          tbody.appendChild(frag);
-        });
-
-        // Re-bind click handlers for any new rows
-        attachCommissionListeners();
-      })
-      .catch(function() { /* silent — next poll will retry */ });
+      // Update heading count
+      var heading = document.querySelector("#writ-list h2");
+      if (heading) {
+        var label = getUrlParam("writ") ? "Children" : "Writs";
+        heading.innerHTML = label + ' <span class="count">(' + items.length + ')</span>';
+      }
+    }).catch(function() {});
   }
 
-  // --- Start polling ---
+  // --- Initial binding ---
+  attachWritRowListeners();
+  loadChildCounts();
+
   setInterval(function() {
-    refreshCommissions();
+    refreshWrits();
     refreshClockStatus();
     refreshTimestamp();
   }, POLL_INTERVAL);
@@ -495,7 +665,7 @@ const CLIENT_JS = `
 `;
 
 // ---------------------------------------------------------------------------
-// Styles
+// Styles — matches the design system used by other tabs
 // ---------------------------------------------------------------------------
 
 const CSS = `
@@ -562,6 +732,7 @@ const CSS = `
   }
   .badge-posted { background: rgba(108,140,255,0.15); color: var(--accent); }
   .badge-active { background: rgba(251,191,36,0.15); color: var(--amber); }
+  .badge-pending { background: rgba(108,140,255,0.10); color: var(--accent); }
   .badge-completed { background: rgba(74,222,128,0.15); color: var(--green); }
   .badge-cancelled { background: rgba(255,255,255,0.06); color: var(--text-muted); }
   .badge-failed { background: rgba(248,113,113,0.15); color: var(--red); }
@@ -591,39 +762,8 @@ const CSS = `
     transition: color 0.15s, border-color 0.15s;
     white-space: nowrap;
   }
-  .top-nav a:hover {
-    color: var(--text);
-    border-bottom-color: var(--accent);
-  }
-  .top-nav a.active {
-    color: var(--text);
-    border-bottom-color: var(--accent);
-  }
-
-  /* Sub Nav */
-  nav:not(.top-nav) {
-    background: var(--bg);
-    border-bottom: 1px solid var(--border);
-    padding: 0 2rem;
-    display: flex;
-    gap: 0;
-    max-width: 100%;
-    overflow-x: auto;
-  }
-  nav:not(.top-nav) a {
-    color: var(--text-muted);
-    text-decoration: none;
-    font-size: 0.8rem;
-    font-weight: 500;
-    padding: 0.6rem 1rem;
-    border-bottom: 2px solid transparent;
-    transition: color 0.15s, border-color 0.15s;
-    white-space: nowrap;
-  }
-  nav:not(.top-nav) a:hover {
-    color: var(--text);
-    border-bottom-color: var(--accent-dim);
-  }
+  .top-nav a:hover { color: var(--text); border-bottom-color: var(--accent); }
+  .top-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
 
   /* Main */
   main {
@@ -649,6 +789,33 @@ const CSS = `
     font-size: 0.85em;
   }
 
+  /* Status filters */
+  .status-filters {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .filter-btn {
+    display: inline-block;
+    padding: 0.3em 0.8em;
+    font-size: 0.8rem;
+    font-weight: 500;
+    border-radius: 4px;
+    text-decoration: none;
+    color: var(--text-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    transition: background 0.15s, color 0.15s;
+  }
+  .filter-btn:hover { background: var(--accent-dim); color: var(--text); }
+  .filter-active {
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: var(--accent-dim);
+    font-weight: 600;
+  }
+
   /* Tables */
   .table-wrap { overflow-x: auto; }
   table {
@@ -669,29 +836,60 @@ const CSS = `
     border-bottom: 1px solid rgba(255,255,255,0.03);
     vertical-align: top;
   }
-  tbody tr:hover:not(.detail-row) { background: rgba(255,255,255,0.02); }
-  .spec-preview {
-    max-width: 360px;
+  tbody tr:hover:not(.detail-row):not(.inline-children) { background: rgba(255,255,255,0.02); }
+  .title-cell {
+    max-width: 320px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--text-muted);
-    font-size: 0.82rem;
   }
   .nowrap { white-space: nowrap; }
 
-  /* Commission rows — clickable */
-  .commission-row { cursor: pointer; }
-  .commission-row.selected { background: rgba(108,140,255,0.06); }
+  /* Nested tables for inline expand */
+  .nested-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  .nested-table thead th {
+    font-size: 0.78rem;
+    padding: 0.35rem 0.5rem;
+  }
+  .nested-table tbody td {
+    padding: 0.35rem 0.5rem;
+  }
+
+  /* Writ rows — expand icon is clickable */
+  .writ-row { }
   .expand-cell { width: 1.5rem; text-align: center; }
   .expand-icon {
     display: inline-block;
     font-size: 0.7rem;
     color: var(--text-muted);
     transition: transform 0.15s;
+    cursor: pointer;
   }
 
-  /* Detail row — expandable panel below commission */
+  /* Drill-down link */
+  .drill-cell { text-align: center; }
+  .drill-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 1rem;
+    font-weight: 600;
+    opacity: 0.6;
+    transition: opacity 0.15s;
+  }
+  .drill-link:hover { opacity: 1; }
+
+  /* Progress indicator in children column */
+  .progress-indicator {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  /* Detail row — expandable panel */
   .detail-row td {
     padding: 0;
     border-bottom: none;
@@ -710,59 +908,73 @@ const CSS = `
     font-size: 0.85rem;
   }
 
-  /* Hierarchy tree */
-  .hierarchy-section { margin-bottom: 0.75rem; }
-  .hierarchy-section:last-child { margin-bottom: 0; }
-  .hierarchy-section h4 {
-    font-size: 0.88rem;
+  /* Inline children (nested expand) */
+  .inline-children td { padding: 0; border-bottom: none; }
+  .inline-children.hidden { display: none; }
+  .inline-panel {
+    margin: 0.25rem 0 0.25rem 1.5rem;
+    padding: 0.5rem;
+  }
+
+  /* Breadcrumb */
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.82rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+  }
+  .breadcrumb-link {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .breadcrumb-link:hover { text-decoration: underline; }
+  .breadcrumb-sep { color: var(--text-muted); }
+  .breadcrumb-current { color: var(--text); font-weight: 500; }
+
+  /* Writ detail card */
+  .detail-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .detail-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+  }
+  .detail-title {
+    font-size: 1.1rem;
     font-weight: 600;
     margin-bottom: 0.5rem;
-    color: var(--text);
+    border-bottom: none;
+    padding-bottom: 0;
   }
-  .hierarchy-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-  .hierarchy-item {
-    border-left: 2px solid var(--border);
-    padding-left: 0.75rem;
-  }
-  .hierarchy-header {
-    cursor: pointer;
-    padding: 0.35rem 0.5rem;
+  .detail-description {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    font-size: 0.82rem;
-    transition: background 0.1s;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.75rem;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-x: auto;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .detail-meta {
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
+    gap: 1.25rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
     flex-wrap: wrap;
-  }
-  .hierarchy-header:hover { background: rgba(255,255,255,0.03); }
-  .hierarchy-children {
-    margin-left: 0.75rem;
-    padding-top: 0.25rem;
-    padding-bottom: 0.25rem;
-  }
-  .hierarchy-children.hidden { display: none; }
-  .text-muted { color: var(--text-muted); }
-
-  /* Strokes (leaf nodes — no expand) */
-  .stroke-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-  .stroke-item {
-    padding: 0.3rem 0.5rem;
-    font-size: 0.82rem;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    border-left: 2px solid var(--border);
-    padding-left: 0.75rem;
   }
 
   /* Pagination */
@@ -808,6 +1020,13 @@ const CSS = `
     flex-direction: column;
     gap: 1rem;
   }
+  .form-row-inline {
+    display: flex;
+    gap: 1rem;
+  }
+  .form-row-inline .form-row {
+    flex: 1;
+  }
   .form-row {
     display: flex;
     flex-direction: column;
@@ -838,12 +1057,19 @@ const CSS = `
     font-family: var(--mono);
     font-size: 0.82rem;
     resize: vertical;
-    min-height: 120px;
+    min-height: 100px;
   }
   .form-actions {
     display: flex;
     justify-content: flex-end;
+    align-items: center;
+    gap: 1rem;
   }
+  .form-message {
+    font-size: 0.82rem;
+  }
+  .form-message-ok { color: var(--green); }
+  .form-message-err { color: var(--red); }
   .form-actions button {
     font-family: var(--sans);
     font-size: 0.85rem;
@@ -859,32 +1085,18 @@ const CSS = `
   .form-actions button:hover {
     background: #5a7be6;
   }
+  .form-actions button:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
 
   /* Utility */
   .mono { font-family: var(--mono); font-size: 0.82rem; }
-  .muted { color: var(--text-muted); font-size: 0.85rem; }
+  .text-muted { color: var(--text-muted); font-size: 0.85rem; }
   .empty {
     color: var(--text-muted);
     font-style: italic;
     padding: 1rem 0;
-  }
-
-  /* Success/Error messages */
-  .message {
-    padding: 0.75rem 1rem;
-    border-radius: var(--radius);
-    font-size: 0.85rem;
-    margin-bottom: 1rem;
-  }
-  .message-success {
-    background: rgba(74,222,128,0.1);
-    border: 1px solid rgba(74,222,128,0.3);
-    color: var(--green);
-  }
-  .message-error {
-    background: rgba(248,113,113,0.1);
-    border: 1px solid rgba(248,113,113,0.3);
-    color: var(--red);
   }
 
   /* Footer */
@@ -900,5 +1112,6 @@ const CSS = `
   @media (max-width: 640px) {
     header { padding: 1rem; }
     main { padding: 1rem; }
+    .form-row-inline { flex-direction: column; }
   }
 `;

@@ -21,7 +21,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@shardworks/nexus-core": ">=0.1.72",
+    "@shardworks/nexus-core": "^0.1.85",
     "better-sqlite3": "^12.8.0",
     "marked": "^15.0.12"
   },

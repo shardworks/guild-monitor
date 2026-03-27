@@ -15,7 +15,7 @@ import { renderTopNav, renderHeader } from "./clockworks.js";
  *
  * This is the "Configuration" section of the dashboard — it displays
  * guild configuration state (workshops, roles, tools, engines, training,
- * clockworks). The top-level nav links to the Commissions section.
+ * clockworks). The top-level nav links to the Work section.
  */
 export function renderDashboard(config: GuildConfig, clockRunning: boolean): string {
   return `<!DOCTYPE html>

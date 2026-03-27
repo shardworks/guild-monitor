@@ -1,15 +1,14 @@
 import http from "node:http";
-import Database from "better-sqlite3";
 import {
   readGuildConfig,
   findGuildRoot,
-  booksPath,
-  listCommissions,
+  createWrit,
+  readWrit,
   listWrits,
   getWritChildren,
+  signalEvent,
   listEvents,
   listDispatches,
-  commission as postCommission,
   clockStart,
   clockStop,
   clockStatus,
@@ -18,6 +17,7 @@ import {
   endConversation,
   listAnimas,
 } from "@shardworks/nexus-core";
+import type { WritRecord, WritStatus } from "@shardworks/nexus-core";
 import { renderDashboard } from "./dashboard.js";
 import { renderApiJson } from "./api.js";
 import { renderWorkPage } from "./work.js";
@@ -66,9 +66,9 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // POST /api/commissions — create a new commission
-      if (pathname === "/api/commissions" && req.method === "POST") {
-        handleCreateCommission(req, res, home);
+      // POST /api/writs — create a new writ from the patron form
+      if (pathname === "/api/writs" && req.method === "POST") {
+        handleCreateWrit(req, res, home);
         return;
       }
 
@@ -110,38 +110,6 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // GET /api/commissions?page=N — paginated commission list for polling
-      if (pathname === "/api/commissions" && req.method === "GET") {
-        const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-        const pageSize = 15;
-        const all = listCommissions(home);
-        const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
-        const currentPage = Math.max(1, Math.min(page, totalPages));
-        const start = (currentPage - 1) * pageSize;
-        respondJson(res, {
-          total: all.length,
-          page: currentPage,
-          pageSize,
-          totalPages,
-          items: all.slice(start, start + pageSize),
-        });
-        return;
-      }
-
-      // GET /api/commissions/:id/children — resolve commission → mandate writ → children
-      if (pathname.startsWith("/api/commissions/") && pathname.endsWith("/children") && req.method === "GET") {
-        const commissionId = pathname.slice("/api/commissions/".length, -"/children".length);
-        const writId = getCommissionWritId(home, commissionId);
-        if (writId) {
-          const children = getWritChildren(home, writId);
-          respondJson(res, children);
-        } else {
-          // No linked mandate writ — return empty array
-          respondJson(res, []);
-        }
-        return;
-      }
-
       // GET /api/events?page=N — paginated event list for polling
       if (pathname === "/api/events" && req.method === "GET") {
         const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
@@ -167,14 +135,18 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // --- Hierarchy API routes (writ-based) ---
+      // --- Writ API routes ---
 
-      // GET /api/writs?parentId=<id>&type=<type>&status=<status>
+      // GET /api/writs?parentId=&type=&status=&topLevel=1
       if (pathname === "/api/writs" && req.method === "GET") {
+        const topLevel = url.searchParams.get("topLevel") === "1";
         const parentId = url.searchParams.get("parentId") ?? undefined;
         const type = url.searchParams.get("type") ?? undefined;
-        const status = url.searchParams.get("status") as any ?? undefined;
-        const writs = listWrits(home, { parentId, type, status });
+        const status = url.searchParams.get("status") as WritStatus | undefined ?? undefined;
+        let writs = listWrits(home, { parentId, type, status });
+        if (topLevel) {
+          writs = writs.filter((w) => !w.parentId);
+        }
         respondJson(res, writs);
         return;
       }
@@ -184,6 +156,19 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         const writId = pathname.slice("/api/writs/".length, -"/children".length);
         const children = getWritChildren(home, writId);
         respondJson(res, children);
+        return;
+      }
+
+      // GET /api/writs/:id — single writ with children
+      if (pathname.startsWith("/api/writs/") && req.method === "GET") {
+        const writId = pathname.slice("/api/writs/".length);
+        const writ = readWrit(home, writId);
+        if (!writ) {
+          respondJsonError(res, 404, "Writ not found");
+          return;
+        }
+        const children = getWritChildren(home, writId);
+        respondJson(res, { ...writ, children });
         return;
       }
 
@@ -324,19 +309,67 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
-      // Work section (renamed from Commissions)
+      // Work section — writs with optional drill-down
       if (pathname === "/work") {
         const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
-        const commissions = listCommissions(home);
-        const html = renderWorkPage(
-          commissions,
-          config.workshops,
+        const statusFilter = url.searchParams.get("status") ?? "all";
+        const focusedWritId = url.searchParams.get("writ") ?? undefined;
+
+        // Build filter options for listWrits
+        const listOpts: { status?: WritStatus } = {};
+        if (statusFilter && statusFilter !== "all") {
+          listOpts.status = statusFilter as WritStatus;
+        }
+
+        let focusedWrit: WritRecord | null = null;
+        let breadcrumb: WritRecord[] = [];
+        let focusedChildStats: { childCount: number; completedCount: number } | undefined;
+        let writs: WritRecord[];
+
+        if (focusedWritId) {
+          // Drill-down mode: show a specific writ and its children
+          focusedWrit = readWrit(home, focusedWritId) ?? null;
+          if (focusedWrit) {
+            // Build breadcrumb by walking up parentId chain
+            let current = focusedWrit;
+            while (current.parentId) {
+              const parent = readWrit(home, current.parentId);
+              if (!parent) break;
+              breadcrumb.unshift(parent);
+              current = parent;
+            }
+            // Get children for the table
+            const childSummaries = getWritChildren(home, focusedWritId);
+            focusedChildStats = {
+              childCount: childSummaries.length,
+              completedCount: childSummaries.filter((c) => c.status === "completed").length,
+            };
+            // List child writs (full records for the table)
+            writs = listWrits(home, { parentId: focusedWritId, ...listOpts });
+          } else {
+            writs = [];
+          }
+        } else {
+          // Top-level view
+          const allWrits = listWrits(home, listOpts);
+          writs = allWrits.filter((w) => !w.parentId);
+        }
+
+        const html = renderWorkPage({
+          writs,
+          totalCount: writs.length,
+          workshops: config.workshops,
+          writTypes: config.writTypes ?? {},
+          statusFilter,
           page,
-          config.name,
-          config.nexus,
-          config.model,
+          focusedWrit,
+          breadcrumb,
+          focusedChildStats,
+          guildName: config.name,
+          nexus: config.nexus,
+          model: config.model,
           clockRunning,
-        );
+        });
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
@@ -410,62 +443,50 @@ function respondJson(res: http.ServerResponse, data: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
-// POST handler for commission creation
+// POST handler for writ creation
 // ---------------------------------------------------------------------------
 
 /**
- * Read a URL-encoded form body from the request, create the commission
- * via nexus-core, and redirect back to the commissions page.
+ * Read a JSON body, create a writ via nexus-core with sourceType 'patron',
+ * and signal 'writ.posted'. Returns the created writ as JSON.
  */
-function handleCreateCommission(
+function handleCreateWrit(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   home: string,
 ): void {
-  const chunks: Buffer[] = [];
+  handleJsonBody(req, res, async (body) => {
+    const content = typeof body.content === "string" ? body.content.trim() : "";
+    const type = typeof body.type === "string" ? body.type : "writ";
+    const workshop = typeof body.workshop === "string" && body.workshop ? body.workshop : undefined;
 
-  req.on("data", (chunk: Buffer) => {
-    chunks.push(chunk);
-    // Guard against oversized payloads (1 MB limit)
-    const total = chunks.reduce((sum, c) => sum + c.length, 0);
-    if (total > 1_048_576) {
-      req.destroy();
-      res.writeHead(413, { "Content-Type": "text/plain" });
-      res.end("Payload too large");
+    if (!content) {
+      respondJsonError(res, 400, "Content is required.");
+      return;
     }
-  });
 
-  req.on("end", () => {
+    // First line = title, full content = description
+    const lines = content.split("\n");
+    const title = lines[0].trim();
+    const description = content;
+
     try {
-      const body = Buffer.concat(chunks).toString("utf-8");
-      const params = new URLSearchParams(body);
-      const workshop = params.get("workshop") ?? "";
-      const spec = params.get("spec") ?? "";
-
-      if (!workshop || !spec) {
-        res.writeHead(302, { Location: "/work?error=missing-fields" });
-        res.end();
-        return;
-      }
-
-      postCommission({ home, workshop, spec });
-
-      // Redirect back to commissions list on success
-      res.writeHead(302, { Location: "/work?created=1" });
-      res.end();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      console.error("Failed to create commission:", msg);
-      res.writeHead(302, {
-        Location: `/work?error=${encodeURIComponent(msg)}`,
+      const writ = createWrit(home, {
+        type,
+        title,
+        description,
+        workshop,
+        sourceType: "patron",
       });
-      res.end();
-    }
-  });
 
-  req.on("error", () => {
-    res.writeHead(500, { "Content-Type": "text/plain" });
-    res.end("Request error");
+      // Signal writ.posted so standing orders can react
+      signalEvent(home, "writ.posted", { writId: writ.id, workshop, type }, "guild-monitor");
+
+      respondJson(res, writ);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to create writ";
+      respondJsonError(res, 500, msg);
+    }
   });
 }
 
@@ -513,26 +534,6 @@ function handleJsonBody(
       respondJsonError(res, 500, "Request error");
     }
   });
-}
-
-/**
- * Look up the mandate writ ID linked to a commission.
- *
- * The core API doesn't expose the commission → writ_id mapping directly,
- * so we read it from the commissions table. This is a single-column lookup
- * that mirrors the pattern used internally by checkCommissionCompletion().
- */
-function getCommissionWritId(home: string, commissionId: string): string | null {
-  const db = new Database(booksPath(home));
-  db.pragma("foreign_keys = ON");
-  try {
-    const row = db.prepare("SELECT writ_id FROM commissions WHERE id = ?").get(commissionId) as
-      | { writ_id: string | null }
-      | undefined;
-    return row?.writ_id ?? null;
-  } finally {
-    db.close();
-  }
 }
 
 /** Send an error response as JSON. */

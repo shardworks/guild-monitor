@@ -164,7 +164,7 @@ function renderWritDetail(
       ${writ.description ? `<pre class="detail-description">${esc(writ.description)}</pre>` : ""}
       <div class="detail-meta">
         <span>Source: ${esc(writ.sourceType ?? "unknown")}</span>
-        ${writ.sessionId ? `<span>Session: <span class="mono">${esc(writ.sessionId)}</span></span>` : ""}
+        ${writ.sessionId ? `<span>Session: <a href="/sessions/${encodeURIComponent(writ.sessionId)}" class="session-link mono">${esc(writ.sessionId)}</a></span>` : ""}
         <span>Created: ${formatDate(writ.createdAt)}</span>
         <span>Updated: ${formatDate(writ.updatedAt)}</span>
       </div>
@@ -1023,6 +1023,15 @@ const CSS = `
     transition: opacity 0.15s;
   }
   .drill-link:hover { opacity: 1; }
+
+  /* Session link */
+  .session-link {
+    color: var(--accent);
+    text-decoration: none;
+    opacity: 0.8;
+    transition: opacity 0.15s;
+  }
+  .session-link:hover { opacity: 1; text-decoration: underline; }
 
   /* Progress indicator in children column */
   .progress-indicator {

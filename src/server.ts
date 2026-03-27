@@ -16,6 +16,8 @@ import {
   takeTurn,
   endConversation,
   listAnimas,
+  listSessions,
+  showSession,
 } from "@shardworks/nexus-core";
 import type { WritRecord, WritStatus } from "@shardworks/nexus-core";
 import { renderDashboard } from "./dashboard.js";
@@ -26,6 +28,11 @@ import {
   renderConsultationPage,
   getConsultableRoles,
 } from "./consultation.js";
+import {
+  renderSessionsPage,
+  renderSessionDetailPage,
+  readSessionRecord,
+} from "./sessions.js";
 
 export interface MonitorOptions {
   /**
@@ -282,6 +289,27 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
         return;
       }
 
+      // --- Session API routes ---
+
+      // GET /api/sessions — list sessions
+      if (pathname === "/api/sessions" && req.method === "GET") {
+        const sessions = listSessions(home, { limit: 200 });
+        respondJson(res, sessions);
+        return;
+      }
+
+      // GET /api/sessions/:id — session detail
+      if (pathname.startsWith("/api/sessions/") && req.method === "GET") {
+        const sessionId = pathname.slice("/api/sessions/".length);
+        const session = showSession(home, sessionId);
+        if (!session) {
+          respondJsonError(res, 404, "Session not found");
+          return;
+        }
+        respondJson(res, session);
+        return;
+      }
+
       // --- Page routes ---
 
       // Read clock daemon status for the header badge
@@ -301,6 +329,70 @@ export function startMonitor(options?: MonitorOptions): Promise<void> {
           config.nexus,
           config.model,
         );
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(html);
+        return;
+      }
+
+      // Sessions section — list and detail views
+      if (pathname === "/sessions") {
+        const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+        const sessions = listSessions(home, { limit: 200 });
+
+        // Build anima ID → name lookup
+        const animas = listAnimas(home);
+        const animaNames: Record<string, string> = {};
+        for (const a of animas) {
+          animaNames[a.id] = a.name;
+        }
+
+        const html = renderSessionsPage({
+          sessions,
+          animaNames,
+          page,
+          guildName: config.name,
+          nexus: config.nexus,
+          model: config.model,
+          clockRunning,
+        });
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(html);
+        return;
+      }
+
+      // Session detail — /sessions/:id
+      if (pathname.startsWith("/sessions/") && pathname !== "/sessions/") {
+        const sessionId = decodeURIComponent(pathname.slice("/sessions/".length));
+        const session = showSession(home, sessionId);
+        if (!session) {
+          res.writeHead(404, { "Content-Type": "text/plain" });
+          res.end("Session not found");
+          return;
+        }
+
+        // Resolve anima name
+        const animas = listAnimas(home);
+        const animaMatch = animas.find((a) => a.id === session.animaId);
+        const animaName = animaMatch?.name ?? session.animaId;
+
+        // Read the session record JSON from disk for transcript data
+        const record = readSessionRecord(home, session.recordPath);
+
+        const html = renderSessionDetailPage({
+          session,
+          animaName,
+          record,
+          guildName: config.name,
+          nexus: config.nexus,
+          model: config.model,
+          clockRunning,
+        });
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
